@@ -70,11 +70,13 @@ def inv_linux_local(target="vm"):
             items.append({"name": source, "version": full_version,
                           "install_name": binary, "ecosystem": "Ubuntu",
                           "manager": "apt", "target": target})
+    pyexe, _, _ = _run("python3 -c 'import sys; print(sys.executable)' 2>/dev/null")
     out, _, _ = _run("python3 -m pip list --format=json 2>/dev/null")
     try:
         for p in json.loads(out or "[]"):
             items.append({"name": p["name"], "version": p["version"],
-                          "ecosystem": "PyPI", "manager": "pip", "target": target})
+                          "ecosystem": "PyPI", "manager": "pip", "target": target,
+                          "python": pyexe.strip() or None})
     except json.JSONDecodeError:
         pass
     out, _, _ = _run("npm ls -g --depth=0 --json 2>/dev/null")
@@ -94,6 +96,8 @@ def inv_linux_local(target="vm"):
 # ------------------------------------------------------------------ macOS (remote)
 MAC_COLLECT = r'''
 export PATH=/opt/homebrew/bin:$PATH
+echo "===PYEXE==="
+python3 -c 'import sys; print(sys.executable)' 2>/dev/null
 echo "===BREW==="
 brew list --versions 2>/dev/null
 echo "===PIP==="
@@ -113,6 +117,7 @@ echo "===END==="
 def inv_mac(target="mac"):
     raw = _remote(target, MAC_COLLECT)
     items, section = [], None
+    pyexe = None
     for line in raw.splitlines():
         line = line.strip()
         if line.startswith("==="):
@@ -120,7 +125,13 @@ def inv_mac(target="mac"):
             continue
         if not line:
             continue
-        if section == "BREW":
+        if section == "PYEXE":
+            # The interpreter the collector's pip belongs to. Patch steps
+            # MUST use this exact interpreter — the caller's shell python
+            # can be a different environment entirely (learned the hard
+            # way: caller's login python was an agent venv with pins).
+            pyexe = line
+        elif section == "BREW":
             parts = line.rsplit(" ", 1)
             if len(parts) == 2:
                 items.append({"name": parts[0], "version": parts[1],
@@ -129,7 +140,8 @@ def inv_mac(target="mac"):
             try:
                 for p in json.loads(line):
                     items.append({"name": p["name"], "version": p["version"],
-                                  "ecosystem": "PyPI", "manager": "pip", "target": target})
+                                  "ecosystem": "PyPI", "manager": "pip",
+                                  "target": target, "python": pyexe})
             except json.JSONDecodeError:
                 pass
         elif section == "NPM":

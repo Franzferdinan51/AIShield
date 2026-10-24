@@ -39,8 +39,12 @@ def plan_for(finding):
         return {"auto": True, "command": f"sudo apt-get install -y --only-upgrade {install}",
                 "note": f"apt upgrades {install} to the distro's fixed build (backports included)"}
     if mgr == "pip":
+        # Use the interpreter the collector inventoried (findings carry it);
+        # a bare `python3` here could resolve to a different environment
+        # than the one that was scanned.
+        py = finding.get("python") or "python3"
         spec = f"'{name}>={fixed}'" if fixed else f"-U {name}"
-        cmd = f"python3 -m pip install -U {spec}" if fixed else f"python3 -m pip install {spec}"
+        cmd = f"{py} -m pip install -U {spec}" if fixed else f"{py} -m pip install {spec}"
         if target_opts(finding["target"]).get("pip_break_system_packages"):
             cmd += " --break-system-packages"
         return {"auto": True, "command": cmd,
@@ -165,4 +169,19 @@ def apply_plan(plan, confirm):
             f.write(json.dumps(entry) + "\n")
         results.append({**step, "result": "applied" if rc == 0 else "failed",
                         "rc": rc, "output_tail": (out + err)[-400:]})
-    return {"applied": results}
+    # Post-apply consistency check: if any pip step ran, ask that same
+    # interpreter whether the environment still resolves (catches the case
+    # where an upgrade overshoots another package's exact pin).
+    checks = {}
+    for s in plan:
+        if s.get("manager") == "pip" and s.get("auto") and s.get("command"):
+            py = s["command"].split(" -m pip")[0]
+            checks.setdefault((s["target"], py), None)
+    warnings = []
+    for (target, py) in checks:
+        rc, out, err = _exec(target, f"{py} -m pip check")
+        text = (out + err).strip()
+        if rc != 0 and text:
+            warnings.append({"target": target, "python": py,
+                             "pip_check": text[:600]})
+    return {"applied": results, "env_warnings": warnings}

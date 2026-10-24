@@ -124,3 +124,8 @@ command `python3 -m aishield.mcp_server` and cwd set to this repo.
   launcher reaches) no longer routes through the VM-side ssh wrappers that
   don't exist there; self-targets collect and patch locally, missing
   wrappers produce a clean error instead of a traceback.
+- **0.4.2** — collector/patcher interpreter agreement: pip findings now
+  carry the exact interpreter that was inventoried, and patch steps use
+  it (a bare `python3` at patch time could resolve to a different
+  environment — e.g. an agent's pinned venv — than the one scanned).
+  `apply` also runs `pip check` afterwards and reports pin conflicts.
