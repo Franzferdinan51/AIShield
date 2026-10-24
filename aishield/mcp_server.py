@@ -62,7 +62,7 @@ def call_tool(name, args):
     if name == "scan_target":
         result = engine.run_scan(args["target"], program=args.get("program"),
                                  use_ai=args.get("ai", False),
-                                 adjudicate_apps=args.get("adjudicate", False))
+                                 adjudicate_apps=args.get("adjudicate", True))
         return _text(result)
     if name == "patch_plan":
         result = engine.run_scan(args["target"], program=args.get("program"))
@@ -76,10 +76,12 @@ def call_tool(name, args):
         return _text({"applied": outcome, "findings_before": len(result["findings"]),
                       "findings_after": len(after["findings"]), "remaining": after["findings"]})
     if name == "shield_status":
+        from . import config as cfgmod
         kev_map, kev_date = feeds.kev()
         models = ai.loaded_models()
         return _text({"kev_entries": len(kev_map), "kev_released": kev_date,
-                      "lmstudio_loaded": models, "ai_model": ai.pick_model(models),
+                      "lmstudio_loaded": models, "ai_model": ai.triage_model(models),
+                      "model_config": cfgmod.load(),
                       "targets": inventory.TARGETS})
     raise ValueError(f"unknown tool {name}")
 

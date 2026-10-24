@@ -28,7 +28,7 @@ def _dedupe(findings):
     return list(merged.values())
 
 
-def run_scan(target, program=None, use_ai=False, adjudicate_apps=False):
+def run_scan(target, program=None, use_ai=False, adjudicate_apps=True):
     started = time.time()
     items = inventory.collect(target)
     if program:
@@ -36,16 +36,19 @@ def run_scan(target, program=None, use_ai=False, adjudicate_apps=False):
     kev_map, kev_date = feeds.kev()
     findings = match.scan_packages(items, kev_map)
     findings += match.scan_apps(items, kev_map)
-    if adjudicate_apps and ai.pick_model():
+    if adjudicate_apps:
         kept = []
         for f in findings:
             if f["confidence"].startswith("name-match"):
-                verdict = ai.adjudicate(f["name"], f["version"], f["kev"])
-                f["ai_verdict"] = verdict
-                if verdict == "no":
-                    continue
-                if verdict == "yes":
-                    f["confidence"] = "name-match, AI-confirmed product"
+                verdict, detail = ai.adjudicate(f["name"], f["version"], f["kev"])
+                if detail.get("via") != "none":
+                    f["ai_verdict"] = verdict
+                    f["ai_detail"] = detail
+                    if verdict == "no":
+                        continue
+                    if verdict == "yes":
+                        f["confidence"] = ("name-match, confirmed by "
+                                           f"{detail.get('via')} model")
             kept.append(f)
         findings = kept
     findings = match.rank(_dedupe(findings))
@@ -53,11 +56,11 @@ def run_scan(target, program=None, use_ai=False, adjudicate_apps=False):
         "target": target, "scanned_at": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "inventory_count": len(items), "program_filter": program,
         "kev_catalog_date": kev_date,
-        "findings": findings, "plan": patch.build_plan(findings),
+        "findings": findings, "plan": patch.build_plan(findings, decide=True),
         "elapsed_s": round(time.time() - started, 1),
     }
     if use_ai:
-        model = ai.pick_model()
+        model = ai.triage_model()
         result["ai_model"] = model
         if model:
             result["ai_brief"] = ai.triage(findings, target, model=model)
@@ -73,15 +76,26 @@ def format_report(result):
     for f in result["findings"]:
         kev_tag = " [KNOWN-EXPLOITED]" if f["known_exploited"] else ""
         fix = f" -> fixed in {', '.join(f['fixed_versions'])}" if f.get("fixed_versions") else ""
+        verdict = ""
+        det = f.get("ai_detail") or {}
+        if f.get("ai_verdict"):
+            verdict = f" [ai: {f['ai_verdict']}" + \
+                      (f" p={det['p_yes']}" if det.get("p_yes") is not None else "") + "]"
         lines.append(f"- {f['name']} {f['version']} ({f['ecosystem']}/{f['manager']}) "
                      f"{','.join(f['cve_ids']) or f['vuln_id']}{kev_tag}: "
-                     f"{f['summary'][:110]}{fix} [{f['confidence']}; via {','.join(f['sources'])}]")
+                     f"{f['summary'][:110]}{fix} [{f['confidence']}; via {','.join(f['sources'])}]{verdict}")
     auto = [p for p in result["plan"] if p["auto"]]
     manual = [p for p in result["plan"] if not p["auto"]]
     if auto:
         lines.append("patch plan (auto):")
         for p in auto:
-            lines.append(f"  $ {p['command']}   # {p['name']} {p['version']}")
+            dec = ""
+            if p.get("decision"):
+                probs = (p.get("decision_detail") or {}).get("probabilities") or {}
+                top = max(probs.values()) if probs else None
+                dec = f"  [decision: {p['decision']}" + (f" p={top}" if top else "") + \
+                      f" via {p.get('decision_detail', {}).get('via', '?')}]"
+            lines.append(f"  $ {p['command']}   # {p['name']} {p['version']}{dec}")
     if manual:
         lines.append("patch plan (manual):")
         for p in manual:

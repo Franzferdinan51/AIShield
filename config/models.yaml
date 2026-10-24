@@ -1,0 +1,9 @@
+server:
+  url: http://localhost:1234
+roles:
+  triage:
+    model: null
+  decision:
+    model: d1-3b
+    fallback: d1-omni-600m
+    endpoint: /v1/systemone

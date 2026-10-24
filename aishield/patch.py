@@ -68,9 +68,23 @@ def _ver(v):
         return (1, None, str(v))
 
 
-def build_plan(findings):
+# Packages a patch run must never auto-apply: the owner's lifelines.
+# A deterministic rule — it fires before (and regardless of) any AI decision.
+LIFELINES = ("linux-image", "linux-headers", "linux-generic", "openssh",
+             "tailscale", "docker", "containerd", "lm-studio", "apt", "dpkg",
+             "grub", "systemd", "libc6", "glibc")
+
+
+def lifeline_hold(name):
+    n = (name or "").lower()
+    return any(tok in n for tok in LIFELINES)
+
+
+def build_plan(findings, decide=False):
     """One step per (target, package, manager): when several CVEs hit one
-    package, patch once to the highest fixed version."""
+    package, patch once to the highest fixed version. With decide=True, each
+    auto step gets a safety decision: lifeline rule first, then the
+    configured decision model (fail-open: no answer = no decision field)."""
     steps = {}
     for f in findings:
         p = plan_for({**f, "fixed_versions": sorted(f.get("fixed_versions") or [],
@@ -90,7 +104,25 @@ def build_plan(findings):
             if new_fixed and (not old_fixed or _ver(new_fixed) > _ver(old_fixed)):
                 s["command"], s["note"], s["auto"] = step["command"], step["note"], step["auto"]
                 s["fixed_versions"] = step["fixed_versions"]
-    return list(steps.values())
+    plan = list(steps.values())
+    if decide:
+        from . import ai
+        checked = 0
+        for s in plan:
+            if not s.get("auto"):
+                continue
+            if lifeline_hold(s["name"]):
+                s["decision"] = "hold"
+                s["decision_detail"] = {"via": "lifeline-rule"}
+                continue
+            if checked >= 80:
+                break
+            checked += 1
+            decision, detail = ai.decide_patch_step(s)
+            if decision:
+                s["decision"] = decision
+                s["decision_detail"] = detail
+    return plan
 
 
 def _exec(target, command, timeout=600):
@@ -116,6 +148,9 @@ def apply_plan(plan, confirm):
     for step in plan:
         if not step.get("auto") or not step.get("command"):
             results.append({**step, "result": "skipped-manual"})
+            continue
+        if step.get("decision") == "hold":
+            results.append({**step, "result": "held-by-decision"})
             continue
         rc, out, err = _exec(step["target"], step["command"])
         entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "target": step["target"],

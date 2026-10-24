@@ -21,11 +21,28 @@ as the reasoning layer. Ships as a CLI and an MCP server.
   explicit confirm (`--apply` / `confirm="PATCH"`), every action is logged
   with before/after versions, and a re-scan verifies the fix landed.
 - **The AI layer never loads a model.** It uses whatever is already loaded
-  in LM Studio; if nothing suitable is loaded, the shield runs without it. Point it at your instance with `AISHIELD_LM_URL` (default `http://localhost:1234`).
+  in LM Studio; if nothing suitable is loaded, the shield runs without it.
+- **Every AI role is swappable — nothing is hardcoded.** A setup wizard
+  (`aishield setup`) lets you point the shield at any model server
+  (LM Studio or any OpenAI-compatible endpoint) and pick the model for
+  each role; choices live in `config/models.yaml` and can be overridden
+  by env vars (`AISHIELD_LM_URL`, `AISHIELD_TRIAGE_MODEL`,
+  `AISHIELD_DECISION_MODEL`). Upgrade or replace a model by editing one
+  file — no code changes.
+- **A decision model checks while scanning.** The `decision` role (any
+  model family served on the SystemOne wire, `POST /v1/systemone` —
+  typed noul/choice questions with calibrated probabilities) adjudicates
+  app name-match candidates and safety-checks every auto patch step.
+  Deterministic lifeline rules (kernel, SSH, Tailscale, Docker, the
+  package manager…) hold critical packages before the AI is even asked,
+  and a held step is never auto-applied. The decision layer fails open:
+  no answer, no decisions — scans still work. Point it at your instance with `AISHIELD_LM_URL` (default `http://localhost:1234`).
 
 ## Quick start
 
 ```sh
+bin/aishield setup                       # wizard: set model server + models
+bin/aishield models                      # show current model configuration
 bin/aishield status                      # feeds + AI layer health
 bin/aishield latest --source critical    # newest critical CVEs (CVE Now)
 bin/aishield latest --source kev         # newest known-exploited (KEV feed)
