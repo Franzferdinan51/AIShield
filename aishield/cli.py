@@ -126,6 +126,11 @@ def cmd_status(args):
     print(f"targets: {', '.join(inventory.targets())}")
 
 
+def cmd_gui(args):
+    from . import gui
+    return gui.serve(port=args.port, open_browser=not args.no_open)
+
+
 def cmd_settings(args):
     from . import settings
     return settings.serve(port=args.port)
@@ -336,6 +341,7 @@ USAGE = """usage: aishield <command> [options]
   models                 show the model configuration
   setup                  wizard: set the model server + models
   settings               settings page in your browser (models + machines)
+  gui                    full desktop-style GUI in your browser (all platforms)
 
 Models are swappable — config/models.yaml or env vars; nothing is hardcoded."""
 
@@ -374,6 +380,12 @@ def main(argv=None):
     p.set_defaults(fn=cmd_models)
     p = sub.add_parser("hosts")
     p.set_defaults(fn=cmd_hosts)
+    p = sub.add_parser("gui")
+    p.add_argument("--port", type=int, default=8770,
+                   help="port for the local GUI (127.0.0.1 only)")
+    p.add_argument("--no-open", action="store_true",
+                   help="don't open the GUI in a browser")
+    p.set_defaults(fn=cmd_gui)
     p = sub.add_parser("settings")
     p.add_argument("--port", type=int, default=8765,
                    help="port for the local settings page (127.0.0.1 only)")

@@ -17,6 +17,19 @@ aishield setup            # connect your model provider + pick models
 aishield scan local       # scan this machine — works with zero config
 ```
 
+## Desktop GUI (all platforms)
+
+```sh
+aishield gui        # opens the app in your browser
+```
+
+A Hermes-desktop-style interface — sidebar, dashboard, scan, patch,
+latest CVEs, CVE lookup, settings — served by the program itself from
+127.0.0.1 and opened in the machine's own browser. Same program, same
+config, no extra install and no build step, so the identical GUI works
+on **Windows, macOS and Linux**. The CLI and MCP server remain fully
+supported front doors.
+
 ## Setup wizard
 
 `aishield setup` walks you through it:
@@ -129,6 +142,7 @@ Register it with any MCP client as a stdio server with command
 - `aishield/patch.py` — patch plans, gated apply, patch log
 - `aishield/report.py` — dependency-free PDF run reports
 - `aishield/engine.py` — scan orchestration + report formatting
+- `aishield/gui.py` — the desktop-style GUI (local web app, stdlib only)
 - `aishield/settings.py` — the local settings page (stdlib only)
 - `aishield/cli.py`, `aishield/mcp_server.py` — the two front doors
 - `config/` — committed templates + your untracked `*.local.yaml`
@@ -146,6 +160,11 @@ Register it with any MCP client as a stdio server with command
 
 ## Changelog
 
+- **0.7.0** — desktop GUI: `aishield gui` serves a Hermes-style web
+  app (dashboard, scan, patch with gated apply + PDF reports, latest
+  CVEs, CVE lookup, full settings) on 127.0.0.1 and opens it in the
+  machine's browser — one program, every platform (Windows/macOS/
+  Linux), no dependencies beyond the stdlib.
 - **0.6.1** — scan-target checkboxes: 'this device' toggle plus a
   per-machine enable flag (remote scanning is opt-in, off by default)
   in the wizard and the settings page; config saves are atomic.
