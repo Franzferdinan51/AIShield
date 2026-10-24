@@ -98,6 +98,17 @@ the same pipeline:
    surfaces pin conflicts, and a **PDF report** of the run lands in
    `data/reports/`.
 
+## Hermes plugin
+
+Hermes agents can drive the shield through the plugin in
+`integrations/hermes-plugin/` — see its README for install
+(`hermes plugins install … --enable`). It exposes `aishield_status`,
+`aishield_scan`, `aishield_patch_plan`, `aishield_patch_apply`
+(gated by the same `PATCH` confirmation), `aishield_latest` and
+`aishield_cve`, and registers a skill with the safety rules
+(scan before patching, never invent the confirmation, trust the
+rescan).
+
 ## How the AI works
 
 The AI is a reasoning layer over the deterministic results — it
@@ -237,6 +248,17 @@ Register it with any MCP client as a stdio server with command
 
 ## Changelog
 
+- **0.9.1** — launcher hardening: `bin/aishield` now probes for the
+  first Python that can import the shield's dependencies instead of
+  trusting `python3` (sanitized environments — agent plugin hosts,
+  cron, launchd — can resolve a bare interpreter without them; the
+  Hermes plugin's first live agent call caught exactly that).
+  `AISHIELD_PYTHON` overrides the choice.
+- **0.9.0** — Hermes plugin (`integrations/hermes-plugin/`): six
+  `aishield_*` agent tools (status, scan, patch plan, gated apply,
+  latest, CVE lookup) plus a bundled skill with the safety rules.
+  The plugin drives the installed CLI as a subprocess; applying
+  still requires the explicit `PATCH` confirmation.
 - **0.8.3** — patch-run hardening: a command timeout or transport
   failure is now a recorded failed step, never a silent run-killer
   (a 600 s `apt-get update` on a slow mirror once ended a run with

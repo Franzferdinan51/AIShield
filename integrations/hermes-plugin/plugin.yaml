@@ -1,0 +1,24 @@
+name: aishield
+version: 0.9.1
+description: >-
+  AI Shield: CVE scanning and gated patching for this machine and the
+  machines it manages. Deterministic matching against OSV, CVE Now and
+  the CISA KEV catalog; an AI layer adjudicates app name-matches and
+  safety-checks patch steps; patches are dry-run by default and apply
+  only behind an explicit PATCH confirmation.
+author: Franzferdinan51
+license: MIT
+homepage: https://github.com/Franzferdinan51/AIShield
+manifest_version: 2
+api_version: 1
+requires_hermes: ">=0.22.2"
+tags: [security, cve, patching, vulnerability]
+provides_tools:
+  - aishield_status
+  - aishield_scan
+  - aishield_patch_plan
+  - aishield_patch_apply
+  - aishield_latest
+  - aishield_cve
+provides_hooks: []
+requires_env: []
