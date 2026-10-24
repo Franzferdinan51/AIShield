@@ -302,6 +302,18 @@ def cmd_setup(args):
             dec = _ask("decision model id (blank = use main model)",
                        cfg["roles"]["decision"]["model"] or "")
             cfg["roles"]["decision"]["model"] = dec or None
+            if dec:
+                fb = _ask("decision fallback model (blank = none)",
+                          cfg["roles"]["decision"].get("fallback") or "")
+                cfg["roles"]["decision"]["fallback"] = fb or None
+                proto = _pick("decision protocol:", [
+                    ("auto", "auto — /v1/decisions first, then /v1/systemone (recommended)"),
+                    ("decisions", "/v1/decisions — OpenAI-compatible (LM Studio 0.4.26+)"),
+                    ("systemone", "/v1/systemone — Jev wire (LM Studio / Ollama)"),
+                    ("chat", "chat only — no typed endpoint")],
+                    ["auto", "decisions", "systemone", "chat"].index(
+                        cfg["roles"]["decision"].get("protocol") or "auto"))
+                cfg["roles"]["decision"]["protocol"] = proto
         print("\nMachines to scan. The shield is designed to run on each")
         print("machine itself — remote scanning is optional and off unless")
         print("you enable it per machine.")

@@ -237,6 +237,9 @@ Register it with any MCP client as a stdio server with command
 
 ## Changelog
 
+- **0.8.2** — wizard consistency: the server-unreachable (manual
+  entry) path now asks for the decision fallback and protocol too,
+  not just the connected path.
 - **0.8.1** — GUI fix: the Patch view read `plan.steps`, but the plan
   is a list — it rendered "0 steps" for every plan. Caught by an
   end-to-end pass over every surface.
