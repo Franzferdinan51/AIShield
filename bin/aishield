@@ -1,2 +1,9 @@
 #!/bin/sh
-cd "$(dirname "$0")/.." && exec python3 -m aishield.cli "$@"
+# Resolve symlinks so `aishield` works when linked onto PATH.
+src="$0"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+done
+cd "$(dirname "$src")/.." && exec python3 -m aishield.cli "$@"

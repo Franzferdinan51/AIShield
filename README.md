@@ -6,6 +6,16 @@ two Windows PCs), built around **CVE Now** for the latest vulnerabilities,
 version-range matching and fixed versions, and a **local LLM in LM Studio**
 as the reasoning layer. Ships as a CLI and an MCP server.
 
+## Install
+
+```sh
+git clone https://github.com/Franzferdinan51/AIShield && cd AIShield
+ln -s "$PWD/bin/aishield" /opt/homebrew/bin/aishield   # macOS; or ~/.local/bin on Linux
+# — or, from the clone:  pip install -e .   (registers the `aishield` command)
+aishield            # bare run: banner + live status + usage
+aishield setup      # point it at your model server + models
+```
+
 ## Why it's built this way
 
 - **Verdicts are deterministic.** Whether you're affected is decided by OSV's
@@ -106,3 +116,6 @@ command `python3 -m aishield.mcp_server` and cwd set to this repo.
   (candidate adjudication + patch-step safety decisions + lifeline holds).
 - **0.1.0** — initial release: KEV + OSV + CVE Now scanning, gated patching,
   CLI + MCP.
+- **0.4.0** — `aishield` is now the terminal command: bare run shows banner +
+  live status + usage, `--version` added, pyproject packaging with a
+  console entry point (`pip install -e .` registers `aishield` on PATH).

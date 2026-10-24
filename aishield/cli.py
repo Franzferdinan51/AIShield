@@ -213,9 +213,26 @@ def cmd_setup(args):
     print(f"triage layer: {tri}")
 
 
+BANNER = "🛡️  AI Shield — CVE Now + KEV + OSV scanner/patcher"
+USAGE = """usage: aishield <command> [options]
+
+  status                 feeds + model server + AI layer health
+  latest                 newest CVEs from CVE Now (--source kev|critical|all)
+  cve <CVE-ID>           full detail on one CVE
+  scan <target>          scan vm|mac|batman|grievous|all (--program X, --ai)
+  patch <target>         dry-run patch plan; --apply executes (held steps stay held)
+  models                 show the model configuration
+  setup                  wizard: set the model server + models
+
+Models are swappable — config/models.yaml or env vars; nothing is hardcoded."""
+
+
 def main(argv=None):
+    from . import __version__
     ap = argparse.ArgumentParser(prog="aishield")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    ap.add_argument("--version", action="version",
+                    version=f"aishield {__version__}")
+    sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("latest")
     p.add_argument("--source", choices=["kev", "critical", "all"], default="critical")
     p.add_argument("--ecosystem", default=None)
@@ -251,6 +268,16 @@ def main(argv=None):
                    help="non-interactive: save given values without prompts")
     p.set_defaults(fn=cmd_setup)
     args = ap.parse_args(argv)
+    if not getattr(args, "fn", None):
+        # Bare `aishield` in a terminal: banner + live status + usage.
+        print(BANNER)
+        try:
+            cmd_status(args)
+        except Exception as e:
+            print(f"(status unavailable: {str(e)[:100]})")
+        print()
+        print(USAGE)
+        return
     args.fn(args)
 
 

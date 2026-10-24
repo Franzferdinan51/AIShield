@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aishield"
+dynamic = ["version"]
+description = "AI Shield — CVE Now + KEV + OSV scanner/patcher with a swappable AI layer (LM Studio triage + decision-model checks)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = ["requests", "packaging", "PyYAML"]
+
+[project.scripts]
+aishield = "aishield.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "aishield.__version__" }
+
+[tool.setuptools]
+packages = ["aishield"]
