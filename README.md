@@ -237,6 +237,9 @@ Register it with any MCP client as a stdio server with command
 
 ## Changelog
 
+- **0.8.1** — GUI fix: the Patch view read `plan.steps`, but the plan
+  is a list — it rendered "0 steps" for every plan. Caught by an
+  end-to-end pass over every surface.
 - **0.8.0** — LM Studio decision endpoints: the decision layer speaks
   `/v1/decisions` (OpenAI-compatible, LM Studio 0.4.26+) in addition
   to the `/v1/systemone` Jev wire, selected by a new `protocol`

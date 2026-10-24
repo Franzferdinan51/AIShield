@@ -339,8 +339,8 @@ $('#plan-go').onclick=async()=>{
  $('#plan-out').innerHTML='<span class="spin">planning…</span>';
  const r=await api('/api/patch/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:$('#patch-target').value})});
  if(r.error){$('#plan-out').textContent='error: '+r.error;return;}
- const rows=(r.plan.steps||[]).map(s=>`<tr><td>${esc(s.name)}</td><td class="dim">${esc(s.command||s.note||'')}</td><td>${s.auto?'<span class="ok">auto</span>':'held/manual'}</td><td>${esc(s.decision||'')}${s.decision_reason?' — '+esc(s.decision_reason):''}</td></tr>`).join('');
- $('#plan-out').innerHTML=`<p>${r.findings_count} findings → ${(r.plan.steps||[]).length} steps</p><table><tr><th>Package</th><th>Command / note</th><th>Mode</th><th>Decision</th></tr>${rows}</table>`;
+ const rows=(r.plan||[]).map(s=>`<tr><td>${esc(s.name)}</td><td class="dim">${esc(s.command||s.note||'')}</td><td>${s.auto?'<span class="ok">auto</span>':'held/manual'}</td><td>${esc(s.decision||'')}${s.decision_reason?' — '+esc(s.decision_reason):''}</td></tr>`).join('');
+ $('#plan-out').innerHTML=`<p>${r.findings_count} findings → ${(r.plan||[]).length} steps</p><table><tr><th>Package</th><th>Command / note</th><th>Mode</th><th>Decision</th></tr>${rows}</table>`;
 };
 $('#apply-go').onclick=async()=>{
  const out=$('#apply-out');out.style.display='block';out.textContent='applying…';
