@@ -6,3 +6,5 @@ __pycache__/
 
 data/reports/
 config/hosts.local.yaml
+config/models.local.yaml
+config/targets.local.yaml

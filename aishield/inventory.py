@@ -11,10 +11,6 @@ import subprocess
 
 from . import transport
 
-# Re-exported for callers that learned it here; the transport module owns
-# host identity now — the program reaches its targets itself.
-this_host = transport.this_host
-
 
 def _run(cmd, timeout=180):
     p = subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True,
@@ -31,44 +27,69 @@ def _remote(target, command, timeout=300):
     return out
 
 
-# ------------------------------------------------------------------ local linux
-def inv_linux_local(target="vm"):
-    items = []
-    out, _, _ = _run("dpkg-query -W -f='${Package} ${Version} ${Source}\\n' 2>/dev/null")
+# ------------------------------------------------------------------ linux
+LINUX_COLLECT = r'''
+echo "===DPKG==="
+dpkg-query -W -f='${Package} ${Version} ${Source}\n' 2>/dev/null
+echo "===PYEXE==="
+python3 -c 'import sys; print(sys.executable)' 2>/dev/null
+echo "===PIP==="
+python3 -m pip list --format=json 2>/dev/null
+echo "===NPM==="
+npm ls -g --depth=0 --json 2>/dev/null
+echo "===NODE==="
+node --version 2>/dev/null
+echo "===END==="
+'''
+
+
+def inv_linux(target):
+    raw = _remote(target, LINUX_COLLECT)
+    items, section = [], None
+    pyexe = None
     seen_src = set()
-    for line in out.splitlines():
-        parts = line.split(" ")
-        if len(parts) >= 2:
-            binary, full_version = parts[0], parts[1]
-            source = parts[2] if len(parts) >= 3 and parts[2] else binary
-            key = (source, full_version)
-            if key in seen_src:
-                continue
-            seen_src.add(key)
-            # OSV's Ubuntu index is keyed by SOURCE package + FULL distro version
-            items.append({"name": source, "version": full_version,
-                          "install_name": binary, "ecosystem": "Ubuntu",
-                          "manager": "apt", "target": target})
-    pyexe, _, _ = _run("python3 -c 'import sys; print(sys.executable)' 2>/dev/null")
-    out, _, _ = _run("python3 -m pip list --format=json 2>/dev/null")
-    try:
-        for p in json.loads(out or "[]"):
-            items.append({"name": p["name"], "version": p["version"],
-                          "ecosystem": "PyPI", "manager": "pip", "target": target,
-                          "python": pyexe.strip() or None})
-    except json.JSONDecodeError:
-        pass
-    out, _, _ = _run("npm ls -g --depth=0 --json 2>/dev/null")
-    try:
-        for name, info in (json.loads(out or "{}").get("dependencies") or {}).items():
-            items.append({"name": name, "version": info.get("version", ""),
-                          "ecosystem": "npm", "manager": "npm", "target": target})
-    except json.JSONDecodeError:
-        pass
-    out, _, _ = _run("node --version 2>/dev/null")
-    if out.strip():
-        items.append({"name": "node", "version": out.strip().lstrip("v"),
-                      "ecosystem": "app", "manager": "binary", "target": target})
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith("==="):
+            section = line.strip("=")
+            continue
+        if not line:
+            continue
+        if section == "PYEXE":
+            pyexe = line
+        elif section == "DPKG":
+            parts = line.split(" ")
+            if len(parts) >= 2:
+                binary, full_version = parts[0], parts[1]
+                source = parts[2] if len(parts) >= 3 and parts[2] else binary
+                key = (source, full_version)
+                if key in seen_src:
+                    continue
+                seen_src.add(key)
+                # OSV's Ubuntu index is keyed by SOURCE package + FULL distro version
+                items.append({"name": source, "version": full_version,
+                              "install_name": binary, "ecosystem": "Ubuntu",
+                              "manager": "apt", "target": target})
+        elif section == "PIP":
+            try:
+                for p in json.loads(line):
+                    items.append({"name": p["name"], "version": p["version"],
+                                  "ecosystem": "PyPI", "manager": "pip",
+                                  "target": target, "python": pyexe})
+            except json.JSONDecodeError:
+                pass
+        elif section == "NPM":
+            try:
+                for name, info in (json.loads(line).get("dependencies") or {}).items():
+                    items.append({"name": name, "version": info.get("version", ""),
+                                  "ecosystem": "npm", "manager": "npm",
+                                  "target": target})
+            except json.JSONDecodeError:
+                pass
+        elif section == "NODE":
+            items.append({"name": "node", "version": line.lstrip("v"),
+                          "ecosystem": "app", "manager": "binary",
+                          "target": target})
     return items
 
 
@@ -189,10 +210,40 @@ def inv_windows(target):
     return items
 
 
-COLLECTORS = {"vm": inv_linux_local, "mac": inv_mac,
-              "batman": inv_windows, "grievous": inv_windows}
-TARGETS = ["vm", "mac", "batman", "grievous"]
+COLLECTORS = {"linux": inv_linux, "macos": inv_mac, "windows": inv_windows}
+
+
+def local_kind():
+    return {"Linux": "linux", "Darwin": "macos",
+            "Windows": "windows"}.get(platform.system(), "linux")
+
+
+def target_kind(target):
+    """What OS a target runs: 'local' is this machine; any other target
+    is a machine the user defined in the hosts config, with its os."""
+    if target == "local":
+        return local_kind()
+    entry = transport.hosts().get(target)
+    if entry is None:
+        raise RuntimeError(
+            f"unknown target '{target}' — targets are 'local' plus the "
+            "machines defined in config/hosts.local.yaml (see `aishield hosts`)")
+    kind = (entry.get("os") or "").lower()
+    if kind not in COLLECTORS:
+        raise RuntimeError(
+            f"target '{target}' needs an os (linux|macos|windows) in its "
+            "hosts config entry")
+    return kind
+
+
+def targets():
+    """All scannable targets: this machine plus every configured host."""
+    return ["local"] + sorted(transport.hosts())
+
+
+# Backwards-compatible alias for callers that read a static list.
+TARGETS = targets()
 
 
 def collect(target):
-    return COLLECTORS[target](target)
+    return COLLECTORS[target_kind(target)](target)

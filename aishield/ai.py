@@ -4,10 +4,11 @@
   triage    — a chat model (OpenAI-compatible /v1/chat/completions) that
               writes prose briefs. Uses only models ALREADY LOADED on the
               server; never triggers a load. Unset = auto-pick strongest.
-  decision  — a decision model on the SystemOne wire (POST /v1/systemone):
-              typed questions (noul / choice) answered with calibrated
-              probabilities, no generated text. Fail-open: if it doesn't
-              answer, scans proceed without decisions.
+  decision  — typed decisions (noul / choice) with calibrated
+              probabilities from an optional decision endpoint
+              (POST /v1/systemone-style), falling back to the triage
+              chat model in prose. Fail-open: if nothing answers, scans
+              proceed without decisions.
 
 Fleet law: AI never decides whether a package version is vulnerable —
 deterministic feed data does that. AI decides identity, priority, and
@@ -28,22 +29,39 @@ def server_url():
     return cfgmod.load()["server"]["url"]
 
 
+def _headers():
+    key = cfgmod.load()["server"].get("api_key") or os.environ.get("AISHIELD_API_KEY")
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
 def _proxies():
-    """Route non-localhost model servers through the fleet tunnel proxy."""
-    url = server_url()
-    if "localhost" in url or "127.0.0.1" in url:
+    """Optional proxying for the model server, opt-in via config
+    (server.proxy_mode: 'env-connect' + server.proxy_port): route
+    through the HTTPS_PROXY host on a different port — for sandboxed
+    runners whose model server is reachable only through a CONNECT
+    proxy. Default: no explicit proxies (requests' environment
+    defaults apply)."""
+    srv = cfgmod.load()["server"]
+    if srv.get("proxy_mode") != "env-connect":
         return None
     https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or ""
-    if https_proxy and ":" in https_proxy:
-        tunnel = https_proxy.rsplit(":", 1)[0] + ":3130"
-        return {"http": tunnel, "https": tunnel}
-    return None
+    port = srv.get("proxy_port")
+    if not https_proxy or not port:
+        return None
+    from urllib.parse import urlparse, urlunparse
+    u = urlparse(https_proxy)
+    netloc = f"{u.hostname}:{port}"
+    if u.username:
+        netloc = f"{u.username}:{u.password or ''}@{netloc}"
+    tunnel = urlunparse((u.scheme or "http", netloc, "", "", "", ""))
+    return {"http": tunnel, "https": tunnel}
 
 
 # ------------------------------------------------------------------ triage (chat)
 def loaded_models():
     try:
-        r = requests.get(server_url() + "/v1/models", proxies=_proxies(), timeout=10)
+        r = requests.get(server_url() + "/v1/models", proxies=_proxies(),
+                         headers=_headers(), timeout=10)
         r.raise_for_status()
         return [m["id"] for m in r.json().get("data", [])]
     except Exception:
@@ -80,15 +98,15 @@ def chat(messages, model=None, max_tokens=1200, timeout=180):
     r = requests.post(server_url() + "/v1/chat/completions",
                       json={"model": model, "messages": messages,
                             "max_tokens": max_tokens, "temperature": 0.2},
-                      proxies=_proxies(), timeout=timeout)
+                      proxies=_proxies(), headers=_headers(), timeout=timeout)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
 
-SYSTEM = ("You are the reasoning layer of AI Shield, a defensive CVE scanner for a "
-          "small home fleet (Linux VM, Mac Studio, two Windows PCs). Be precise and "
-          "concrete. Never invent CVE details beyond what you are given. Plain "
-          "language, no hype: say what is exposed, how bad it is, and the exact fix.")
+SYSTEM = ("You are the reasoning layer of AI Shield, a defensive CVE scanner "
+          "people run on their own machines. Be precise and concrete. Never "
+          "invent CVE details beyond what you are given. Plain language, no "
+          "hype: say what is exposed, how bad it is, and the exact fix.")
 
 
 def triage(findings, target, model=None):
@@ -112,7 +130,7 @@ def triage(findings, target, model=None):
         return f"(AI brief unavailable: {str(e)[:120]})"
 
 
-# ------------------------------------------------------------------ decision (SystemOne wire)
+# ------------------------------------------------- decision (typed endpoint)
 import time as _time
 
 _decision_dead_until = 0.0
@@ -135,7 +153,8 @@ def decision_answers(state, questions, timeout=20):
             r = requests.post(server_url() + endpoint,
                               json={"model": model, "state": state,
                                     "questions": questions},
-                              proxies=_proxies(), timeout=timeout)
+                              proxies=_proxies(), headers=_headers(),
+                              timeout=timeout)
             if r.status_code != 200:
                 continue
             answers = r.json().get("answers")
@@ -225,6 +244,22 @@ def decide_patch_step(step):
         state,
         "Decide whether this patch step may be auto-applied or must be held "
         "for a human. When in doubt, hold.", criteria)
-    if not label:
+    if label:
+        return label, {"probabilities": probs, "model": model, "via": "decision"}
+    # Chat fallback: any loaded chat model can make the same call in
+    # prose. Strict one-word answer; anything unclear means no decision
+    # (the caller treats silence as fail-open, and lifelines already
+    # fired deterministically before this layer).
+    try:
+        out = chat([{"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": state + "\nMay this patch step be "
+                     "auto-applied, or must it be held for a human? Answer with "
+                     "exactly one word: allow or hold."}], max_tokens=8, timeout=30)
+    except Exception:
+        out = None
+    if not out:
         return None, {}
-    return label, {"probabilities": probs, "model": model, "via": "decision"}
+    word = out.strip().lower().split()[0].strip(".,")
+    if word in ("allow", "hold"):
+        return word, {"via": "chat"}
+    return None, {}

@@ -12,7 +12,6 @@ A host entry: {host, user, port, identity, proxy}
 Self-targets (this machine) run locally with no ssh at all.
 """
 import os
-import platform
 import subprocess
 from urllib.parse import urlparse
 
@@ -20,25 +19,8 @@ import yaml
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-DEFAULTS = {
-    "mac": {"host": "", "user": "", "port": 22,
-            "identity": "~/.ssh/id_ed25519", "proxy": "none"},
-    "batman": {"host": "", "user": "", "port": 22,
-               "identity": "~/.ssh/id_ed25519", "proxy": "none"},
-    "grievous": {"host": "", "user": "", "port": 22,
-                 "identity": "~/.ssh/id_ed25519", "proxy": "none"},
-}
-
-
-def this_host():
-    """Which fleet target THIS machine is (macOS -> mac, Linux -> vm).
-    Windows machines report None: they are targets, reached over ssh."""
-    system = platform.system()
-    if system == "Darwin":
-        return "mac"
-    if system == "Linux":
-        return "vm"
-    return None
+ENTRY_DEFAULTS = {"port": 22, "identity": "~/.ssh/id_ed25519",
+                  "proxy": "none"}
 
 
 def _load_file(name):
@@ -50,12 +32,20 @@ def _load_file(name):
 
 
 def hosts():
-    cfg = {k: dict(v) for k, v in DEFAULTS.items()}
+    """User-defined machines from config/hosts.yaml + hosts.local.yaml.
+    The program ships with NO built-in targets: an entry counts only
+    when it names a host and a user (the committed template's empty
+    example sections don't)."""
+    cfg = {}
     for name in ("hosts.yaml", "hosts.local.yaml"):
         for target, entry in (_load_file(name) or {}).items():
-            if target in cfg and isinstance(entry, dict):
-                cfg[target].update({k: v for k, v in entry.items()
-                                    if v is not None})
+            if isinstance(entry, dict):
+                merged = dict(ENTRY_DEFAULTS)
+                merged.update(cfg.get(target) or {})
+                merged.update({k: v for k, v in entry.items()
+                               if v is not None})
+                cfg[target] = merged
+    cfg = {t: e for t, e in cfg.items() if e.get("host") and e.get("user")}
     for target in cfg:
         env = os.environ.get("AISHIELD_HOST_" + target.upper())
         if env:  # user@host[:port]
@@ -72,6 +62,29 @@ def hosts():
 
 def describe():
     return hosts()
+
+
+def save_host(name, entry):
+    """Add/replace one machine in the untracked hosts.local.yaml."""
+    path = os.path.join(BASE, "config", "hosts.local.yaml")
+    doc = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            doc = yaml.safe_load(f) or {}
+    doc[name] = entry
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        yaml.safe_dump(doc, f, sort_keys=False)
+    return path
+
+
+def save_all_hosts(entries):
+    """Replace the untracked hosts.local.yaml wholesale (settings page)."""
+    path = os.path.join(BASE, "config", "hosts.local.yaml")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        yaml.safe_dump(entries or {}, f, sort_keys=False)
+    return path
 
 
 def _proxy_command(port_override=None):
@@ -125,16 +138,12 @@ def ssh_argv(target, command):
 
 def run(target, command, timeout=300):
     """Run `command` on `target`; returns (stdout, stderr, rc).
-    Self-targets run locally in a shell; remote targets over ssh with
-    the command as ONE argument (the remote shell parses it once)."""
-    if target == this_host():
+    'local' runs in this machine's shell; any other target goes over
+    ssh with the command as ONE argument (parsed once, remotely)."""
+    if target == "local":
         p = subprocess.run(command, shell=True, capture_output=True,
                            text=True, timeout=timeout)
         return p.stdout, p.stderr, p.returncode
-    if target not in hosts():
-        raise RuntimeError(
-            f"target '{target}' can only be scanned from the machine "
-            "itself (no remote transport is configured for it)")
     p = subprocess.run(ssh_argv(target, command), capture_output=True,
                        text=True, timeout=timeout)
     return p.stdout, p.stderr, p.returncode

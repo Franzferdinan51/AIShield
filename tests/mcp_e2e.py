@@ -64,14 +64,14 @@ check("unknown tool -> error, server alive",
 
 send({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
       "params": {"name": "patch_apply",
-                 "arguments": {"target": "vm", "program": "brotli"}}})
+                 "arguments": {"target": "local", "program": "brotli"}}})
 r = recv()
 ok = ("error" in r) or ("PATCH" in json.dumps(r))
 check("patch_apply without confirm refused cleanly", ok, json.dumps(r)[:160])
 
 send({"jsonrpc": "2.0", "id": 8, "method": "tools/call",
       "params": {"name": "scan_target",
-                 "arguments": {"target": "mac", "program": "starlette"}}})
+                 "arguments": {"target": "local", "program": "openssl"}}})
 r = recv()
 txt = r.get("result", {}).get("content", [{}])[0].get("text", "")
 check("scan_target still works after errors", "findings" in txt)

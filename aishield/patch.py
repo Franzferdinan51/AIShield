@@ -1,10 +1,9 @@
 """Patch planner + executor.
 
-Safety model (fleet law): planning is always free; applying requires an explicit
-confirm token at the call site (CLI --apply flag / MCP confirm="PATCH"). Every
-apply is logged with before/after versions, and the caller re-scans to verify.
-Commands run where the software lives: locally for the VM, over the ssh
-wrappers for mac/batman/grievous.
+Safety model: planning is always free; applying requires an explicit
+confirm token at the call site (CLI --apply flag / MCP confirm="PATCH").
+Every apply is logged, and the caller re-scans to verify. Commands run
+where the software lives, through the program's own transport.
 """
 import json
 import os
@@ -17,12 +16,28 @@ LOG = os.path.join(HERE, "data", "patch-log.jsonl")
 
 
 def target_opts(target):
+    """Per-target options from config/targets.yaml, overridden by the
+    untracked config/targets.local.yaml; the '_all_' entry merges into
+    every target."""
+    opts = {}
     try:
         import yaml
-        with open(os.path.join(HERE, "config", "targets.yaml")) as f:
-            return (yaml.safe_load(f) or {}).get(target, {}) or {}
+        for name in ("targets.yaml", "targets.local.yaml"):
+            path = os.path.join(HERE, "config", name)
+            if not os.path.exists(path):
+                continue
+            with open(path) as f:
+                doc = yaml.safe_load(f) or {}
+            merged = dict(doc.get("_all_") or {})
+            merged.update(doc.get(target) or {})
+            for k, v in merged.items():
+                if k == "lifeline_extra":
+                    opts[k] = list(opts.get(k) or []) + list(v or [])
+                else:
+                    opts[k] = v
     except Exception:
-        return {}
+        pass
+    return opts
 
 
 def plan_for(finding):
@@ -72,16 +87,19 @@ def _ver(v):
         return (1, None, str(v))
 
 
-# Packages a patch run must never auto-apply: the owner's lifelines.
-# A deterministic rule — it fires before (and regardless of) any AI decision.
+# Packages a patch run must never auto-apply: the machine's lifelines —
+# boot/kernel, remote access, the package managers themselves, container
+# runtimes. A deterministic rule: it fires before (and regardless of)
+# any AI decision. Users extend it per target with lifeline_extra.
 LIFELINES = ("linux-image", "linux-headers", "linux-generic", "openssh",
-             "tailscale", "docker", "containerd", "lm-studio", "apt", "dpkg",
-             "grub", "systemd", "libc6", "glibc")
+             "openssh-server", "docker", "containerd", "apt", "dpkg",
+             "rpm", "dnf", "grub", "systemd", "libc6", "glibc")
 
 
-def lifeline_hold(name):
+def lifeline_hold(name, target=None):
     n = (name or "").lower()
-    return any(tok in n for tok in LIFELINES)
+    extra = target_opts(target).get("lifeline_extra") or [] if target else []
+    return any(tok in n for tok in list(LIFELINES) + [str(e).lower() for e in extra])
 
 
 def build_plan(findings, decide=False):
@@ -115,7 +133,7 @@ def build_plan(findings, decide=False):
         for s in plan:
             if not s.get("auto"):
                 continue
-            if lifeline_hold(s["name"]):
+            if lifeline_hold(s["name"], s.get("target")):
                 s["decision"] = "hold"
                 s["decision_detail"] = {"via": "lifeline-rule"}
                 continue

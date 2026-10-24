@@ -1,26 +1,31 @@
 """Model/server configuration — NOTHING about models is hardcoded in code.
 
-Resolution order (highest wins): environment variables -> config/models.yaml
--> built-in defaults. The setup wizard (`aishield setup`) writes the YAML.
+Resolution order (highest wins): environment variables ->
+config/models.local.yaml (untracked) -> config/models.yaml -> built-in
+defaults (which name NO models: every role starts unset). The setup
+wizard (`aishield setup`) writes the YAML.
 
-  AISHIELD_LM_URL        model server base URL (LM Studio or any
-                         OpenAI-compatible server)
+  AISHIELD_LM_URL         model server base URL (any OpenAI-compatible
+                          server: LM Studio, llama.cpp, Ollama, vLLM...)
   AISHIELD_TRIAGE_MODEL   model id for prose triage briefs (unset = auto-pick
-                         the strongest loaded chat model)
-  AISHIELD_DECISION_MODEL model id for typed decisions (SystemOne wire,
-                         POST /v1/systemone); any decision-model family works
-                         as long as the server exposes that endpoint
+                          the strongest loaded chat model)
+  AISHIELD_DECISION_MODEL model id for typed decisions on the optional
+                          decision endpoint (POST /v1/systemone-style:
+                          {model, state, questions} -> calibrated answers).
+                          Unset is fine: decisions then fall back to the
+                          triage chat model, and finally to 'unsure'.
 """
 import os
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS_YAML = os.path.join(HERE, "config", "models.yaml")
+MODELS_LOCAL_YAML = os.path.join(HERE, "config", "models.local.yaml")
 
 DEFAULTS = {
     "server": {"url": "http://localhost:1234"},
     "roles": {
         "triage": {"model": None},
-        "decision": {"model": "d1-3b", "fallback": "d1-omni-600m",
+        "decision": {"model": None, "fallback": None,
                      "endpoint": "/v1/systemone"},
     },
 }
@@ -31,18 +36,21 @@ def load():
            "roles": {k: dict(v) for k, v in DEFAULTS["roles"].items()}}
     try:
         import yaml
-        if os.path.exists(MODELS_YAML):
-            with open(MODELS_YAML) as f:
-                doc = yaml.safe_load(f) or {}
-            if isinstance(doc.get("server"), dict):
-                cfg["server"].update(doc["server"])
-            for role, vals in (doc.get("roles") or {}).items():
-                if isinstance(vals, dict) and role in cfg["roles"]:
-                    cfg["roles"][role].update(vals)
+        for path in (MODELS_YAML, MODELS_LOCAL_YAML):
+            if os.path.exists(path):
+                with open(path) as f:
+                    doc = yaml.safe_load(f) or {}
+                if isinstance(doc.get("server"), dict):
+                    cfg["server"].update(doc["server"])
+                for role, vals in (doc.get("roles") or {}).items():
+                    if isinstance(vals, dict) and role in cfg["roles"]:
+                        cfg["roles"][role].update(vals)
     except Exception:
         pass
     if os.environ.get("AISHIELD_LM_URL"):
         cfg["server"]["url"] = os.environ["AISHIELD_LM_URL"]
+    if os.environ.get("AISHIELD_API_KEY"):
+        cfg["server"]["api_key"] = os.environ["AISHIELD_API_KEY"]
     if os.environ.get("AISHIELD_TRIAGE_MODEL"):
         cfg["roles"]["triage"]["model"] = os.environ["AISHIELD_TRIAGE_MODEL"]
     if os.environ.get("AISHIELD_DECISION_MODEL"):
@@ -52,8 +60,11 @@ def load():
 
 
 def save(cfg):
+    """Persist to the UNTRACKED local config — a wizard run may hold an
+    API key or a private server address, neither belongs in version
+    control. config.load() layers it above models.yaml."""
     import yaml
-    os.makedirs(os.path.dirname(MODELS_YAML), exist_ok=True)
-    with open(MODELS_YAML, "w") as f:
+    os.makedirs(os.path.dirname(MODELS_LOCAL_YAML), exist_ok=True)
+    with open(MODELS_LOCAL_YAML, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
-    return MODELS_YAML
+    return MODELS_LOCAL_YAML

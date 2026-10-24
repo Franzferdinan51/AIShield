@@ -1,11 +1,14 @@
-# AI Shield per-target options.
-# pip_break_system_packages: ONLY for disposable/sandbox pythons (PEP 668).
-# Never enable on the Mac (Homebrew python) or a machine you care about.
-vm:
-  pip_break_system_packages: true
-mac:
-  pip_break_system_packages: false
-batman:
-  pip_break_system_packages: false
-grievous:
+# AI Shield per-target patch options, keyed by target name ("local" or
+# a machine from your hosts config). Real per-machine choices belong in
+# the untracked config/targets.local.yaml; this file ships safe defaults.
+#
+# pip_break_system_packages: allow pip installs into PEP 668
+# "externally-managed" environments. ONLY for disposable/sandbox
+# pythons — on a machine you care about, the owning package manager
+# (e.g. Homebrew) should be what changes those packages.
+#
+# lifeline_extra: extra name fragments that must never be auto-patched
+# on that target, beyond the built-in lifeline list (kernel/boot, ssh,
+# package managers, container runtimes). "_all_" applies to every target.
+local:
   pip_break_system_packages: false

@@ -1,34 +1,19 @@
-# AI Shield fleet targets — how the program reaches each machine itself.
+# AI Shield targets — the machines the program should scan.
 #
-# This committed file is a TEMPLATE: put real addresses in
-# config/hosts.local.yaml (untracked, never committed) or set
-# AISHIELD_HOST_MAC=user@host[:port] style env vars.
+# The program ships with NO built-in targets. "local" (this machine)
+# always works with zero configuration. Define your other machines in
+# config/hosts.local.yaml (untracked — real addresses never belong in
+# version control) or via AISHIELD_HOST_<NAME>=user@host[:port] env vars.
 #
-#   host:     IP or hostname (e.g. a tailnet address)
-#   user:     ssh user on that machine
-#   port:     ssh port (default 22)
-#   identity: ssh private key path (default ~/.ssh/id_ed25519)
-#   proxy:    "none" (normal networks) or "env" — route through an
-#             HTTP CONNECT proxy taken from the HTTPS_PROXY env var
-#             (for sandboxed runners whose only egress is a proxy)
+# Example hosts.local.yaml:
 #
-# A target scanned from the machine it names needs no entry at all:
-# the program detects it is running on that host and works locally.
-mac:
-  host: ""
-  user: ""
-  port: 22
-  identity: "~/.ssh/id_ed25519"
-  proxy: "none"
-batman:
-  host: ""
-  user: ""
-  port: 22
-  identity: "~/.ssh/id_ed25519"
-  proxy: "none"
-grievous:
-  host: ""
-  user: ""
-  port: 22
-  identity: "~/.ssh/id_ed25519"
-  proxy: "none"
+#   workstation:
+#     os: linux            # linux | macos | windows
+#     host: "192.0.2.10"   # IP or hostname (e.g. a VPN/tailnet address)
+#     user: "alice"
+#     port: 22
+#     identity: "~/.ssh/id_ed25519"
+#     proxy: "none"        # or "env" / "env:<port>" to route ssh through
+#                          # an HTTP CONNECT proxy from HTTPS_PROXY
+#
+# Then: aishield scan workstation

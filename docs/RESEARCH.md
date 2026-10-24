@@ -31,18 +31,17 @@ OpenSCAP, Lynis, Wazuh, patchman, plus the CVE data APIs.
   `get_vulnerability` for SSVC-rich detail, `check_stack` as an independent
   second matcher (chunked; distro ecosystems excluded — it rejects them).
 - KEV overlay for known-exploited ranking + app/product watching.
-- LM Studio reasoning layer restricted to already-loaded models: triage
-  briefs, product-identity adjudication for name-match candidates. The LLM
-  never decides affectedness for packages.
+- A reasoning layer restricted to models the user's server already
+  serves: triage briefs, product-identity adjudication for name-match
+  candidates. The LLM never decides affectedness for packages.
 - Gated patching with rescan verification (above).
 
 ## On the roadmap (from the research)
 
 - Trivy/Grype cross-check mode for container images and language lockfiles
   (Grype's `relatedVulnerabilities`/match-type data is a good confidence
-  signal). Note: verify scanner provenance before trusting one — the fleet's
-  own Trivy install currently carries a KEV candidate of its own.
+  signal). Note: verify scanner provenance before trusting one.
 - EPSS scores in ranking alongside KEV.
 - Snapshot/rollback integration (Timeshift/APFS/Restore Points) before apply.
 - Winget-based patching for Windows apps.
-- Scheduled fleet scans feeding the DEFCON daily estimate.
+- Scheduled scans with report delivery.

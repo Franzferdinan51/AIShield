@@ -5,7 +5,8 @@
   aishield patch <target> [--program NAME] [--apply] [--json]
   aishield cve <CVE-ID>
   aishield status
-Targets: vm (this machine), mac, batman, grievous, all
+Targets: 'local' (this machine) plus any machines defined in
+config/hosts.local.yaml — see `aishield hosts`. 'all' scans every target.
 """
 import argparse
 import json
@@ -37,7 +38,7 @@ def cmd_latest(args):
 
 
 def cmd_scan(args):
-    targets = inventory.TARGETS if args.target == "all" else [args.target]
+    targets = inventory.targets() if args.target == "all" else [args.target]
     failed = False
     for t in targets:
         try:
@@ -122,19 +123,24 @@ def cmd_status(args):
         print("CVE Now: reachable")
     except Exception as e:
         print(f"CVE Now: unreachable ({str(e)[:120]})")
-    print(f"targets: {', '.join(inventory.TARGETS)}")
+    print(f"targets: {', '.join(inventory.targets())}")
+
+
+def cmd_settings(args):
+    from . import settings
+    return settings.serve(port=args.port)
 
 
 def cmd_hosts(args):
     print(json.dumps(transport.describe(), indent=1))
-    print("this host:", transport.this_host() or "(not a fleet target)")
+    print("plus 'local' — this machine, kind:", inventory.local_kind())
     print("config: config/hosts.yaml + config/hosts.local.yaml (untracked)")
 
 
 def cmd_models(args):
     cfg = cfgmod.load()
     print(json.dumps(cfg, indent=1))
-    print(f"config file: {cfgmod.MODELS_YAML}")
+    print(f"config files: {cfgmod.MODELS_YAML} + {cfgmod.MODELS_LOCAL_YAML} (untracked, wins)")
     print("env overrides: AISHIELD_LM_URL, AISHIELD_TRIAGE_MODEL, "
           "AISHIELD_DECISION_MODEL")
 
@@ -161,79 +167,152 @@ def _pick(title, options, default_idx=0):
         return options[default_idx][0]
 
 
+PROVIDERS = [
+    ("lmstudio", "LM Studio (local)", "http://localhost:1234"),
+    ("ollama", "Ollama (local)", "http://localhost:11434/v1"),
+    ("llamacpp", "llama.cpp server (local)", "http://localhost:8080/v1"),
+    ("vllm", "vLLM (local / self-hosted)", "http://localhost:8000/v1"),
+    ("openai", "OpenAI API", "https://api.openai.com/v1"),
+    ("custom", "Custom OpenAI-compatible URL", None),
+]
+
+
+def _parse_ssh_target(raw):
+    """'user@host[:port]' -> (user, host, port)."""
+    raw = raw.strip()
+    port = 22
+    if "@" in raw:
+        user, _, hostport = raw.partition("@")
+    else:
+        user, hostport = "", raw
+    if ":" in hostport:
+        hostport, _, p = hostport.rpartition(":")
+        try:
+            port = int(p)
+        except ValueError:
+            pass
+    return user, hostport, port
+
+
 def cmd_setup(args):
     cfg = cfgmod.load()
+    provider_urls = {k: u for k, _, u in PROVIDERS if u}
+    if getattr(args, "provider", None) and not args.server:
+        cfg["server"]["url"] = provider_urls[args.provider]
     if args.server:
         cfg["server"]["url"] = args.server.rstrip("/")
+    if getattr(args, "api_key", None) is not None:
+        cfg["server"]["api_key"] = args.api_key or None
     if args.triage is not None:
         cfg["roles"]["triage"]["model"] = args.triage or None
     if args.decision is not None:
         cfg["roles"]["decision"]["model"] = args.decision or None
     if args.decision_fallback is not None:
         cfg["roles"]["decision"]["fallback"] = args.decision_fallback or None
+    for spec in (getattr(args, "add_host", None) or []):
+        # name:os:user@host[:port]
+        try:
+            name, osname, ssh = spec.split(":", 2)
+            user, host, port = _parse_ssh_target(ssh)
+            transport.save_host(name, {"os": osname, "host": host,
+                                       "user": user, "port": port})
+            print(f"host saved: {name} ({osname}, {user}@{host}:{port})")
+        except Exception as e:
+            print(f"could not parse --add-host '{spec}': {e}")
     if not args.yes:
-        print("AI Shield setup — pick the model server and the models for "
-              "each role.\nEverything is swappable later: edit "
-              "config/models.yaml, re-run setup, or use env vars.\n")
-        cfg["server"]["url"] = _ask("model server URL (LM Studio or any "
-                                    "OpenAI-compatible server)",
-                                    cfg["server"]["url"]).rstrip("/")
-        import aishield.ai as _ai  # probe with the new URL in-process
-        os_url = cfg["server"]["url"]
-        import os as _os
-        _os.environ["AISHIELD_LM_URL"] = os_url
-        loaded = _ai.loaded_models()
+        print("AI Shield setup — connect a model provider, pick the models,")
+        print("and (optionally) add machines to scan. Everything is saved to")
+        print("untracked local config; re-run setup any time to change it.\n")
+        cur_url = cfg["server"]["url"]
+        default_idx = next((i for i, (_, _, u) in enumerate(PROVIDERS)
+                            if u == cur_url), 0)
+        pkey = _pick("model provider:", [(k, f"{label} — {u or 'you enter the URL'}")
+                                         for k, label, u in PROVIDERS],
+                     default_idx)
+        if pkey == "custom":
+            cfg["server"]["url"] = _ask("model server base URL", cur_url).rstrip("/")
+        else:
+            cfg["server"]["url"] = _ask("model server base URL",
+                                        provider_urls[pkey]).rstrip("/")
+        have_key = bool(cfg["server"].get("api_key"))
+        key = _ask("API key (blank = none; local servers usually need none"
+                   + (", Enter keeps the saved one" if have_key else "") + ")")
+        if key:
+            cfg["server"]["api_key"] = key
+        os.environ["AISHIELD_LM_URL"] = cfg["server"]["url"]
+        if cfg["server"].get("api_key"):
+            os.environ["AISHIELD_API_KEY"] = cfg["server"]["api_key"]
+        loaded = ai.loaded_models()
         if loaded:
-            print(f"server reachable — {len(loaded)} models loaded")
-            chat_opts = [(None, "auto — strongest loaded chat model")]
-            chat_opts += [(m, m) for m in loaded if not m.lower().startswith("d1")
-                          and "embed" not in m.lower()]
+            print(f"\nconnected — the server lists {len(loaded)} model(s).")
+            chat_opts = [(None, "auto — strongest chat model on the server")]
+            chat_opts += [(m, m) for m in loaded
+                          if "embed" not in m.lower()]
             chat_opts.append(("__custom__", "type a model id manually"))
-            choice = _pick("triage model (writes the briefs):", chat_opts, 0)
+            cur = cfg["roles"]["triage"]["model"]
+            di = next((i for i, (v, _) in enumerate(chat_opts) if v == cur), 0)
+            choice = _pick("main model (writes briefs; also the fallback for "
+                           "decisions):", chat_opts, di)
             if choice == "__custom__":
-                choice = _ask("triage model id") or None
+                choice = _ask("main model id") or None
             cfg["roles"]["triage"]["model"] = choice
-            dec_opts = [(m, m) for m in loaded if m.lower().startswith("d1")]
-            dec_opts += [(m, m) for m in loaded if not m.lower().startswith("d1")]
+            print("\nThe decision model makes the safety calls (is this app the")
+            print("vulnerable product? may this patch run unattended?). If your")
+            print("server exposes a typed decision endpoint, name its model;")
+            print("otherwise skip — decisions fall back to the main model.")
+            dec_opts = [(None, "none — use the main model for decisions")]
+            dec_opts += [(m, m) for m in loaded]
             dec_opts.append(("__custom__", "type a model id manually"))
-            dec_opts.append((None, "none — disable the decision layer"))
             cur = cfg["roles"]["decision"]["model"]
-            default_idx = next((i for i, (v, _) in enumerate(dec_opts)
-                                if v == cur), 0)
-            choice = _pick("decision model (typed checks via /v1/systemone):",
-                           dec_opts, default_idx)
+            di = next((i for i, (v, _) in enumerate(dec_opts) if v == cur), 0)
+            choice = _pick("decision model (optional):", dec_opts, di)
             if choice == "__custom__":
                 choice = _ask("decision model id") or None
             cfg["roles"]["decision"]["model"] = choice
-            fb = _ask("decision fallback model (blank = none)",
-                      cfg["roles"]["decision"].get("fallback") or "")
-            cfg["roles"]["decision"]["fallback"] = fb or None
+            if choice:
+                fb = _ask("decision fallback model (blank = none)",
+                          cfg["roles"]["decision"].get("fallback") or "")
+                cfg["roles"]["decision"]["fallback"] = fb or None
         else:
-            print("server not reachable right now — saving anyway; "
-                  "you can set model ids by name.")
-            tri = _ask("triage model id (blank = auto)",
+            print("\nserver not reachable right now — that's fine, save now")
+            print("and the shield picks models up when the server is up.")
+            tri = _ask("main model id (blank = auto)",
                        cfg["roles"]["triage"]["model"] or "")
             cfg["roles"]["triage"]["model"] = tri or None
-            dec = _ask("decision model id (blank = disable)",
+            dec = _ask("decision model id (blank = use main model)",
                        cfg["roles"]["decision"]["model"] or "")
             cfg["roles"]["decision"]["model"] = dec or None
+        print("\nMachines to scan: 'local' (this one) is always included.")
+        while True:
+            name = _ask("add a machine? its short name (blank to finish)")
+            if not name:
+                break
+            osname = _pick(f"os for '{name}':",
+                           [("linux", "linux"), ("macos", "macos"),
+                            ("windows", "windows")], 0)
+            ssh = _ask("ssh target (user@host[:port])")
+            user, host, port = _parse_ssh_target(ssh)
+            if not host or not user:
+                print("  need user@host — skipped")
+                continue
+            path = transport.save_host(name, {"os": osname, "host": host,
+                                              "user": user, "port": port})
+            print(f"  saved {name} -> {user}@{host}:{port} ({osname}) in {path}")
     path = cfgmod.save(cfg)
-    print(f"\nsaved: {path}")
-    url = cfg["server"]["url"]
-    if any(tok in url for tok in ("100.", "192.168.", "10.", "172.16.", ".local")):
-        print("note: that server URL looks like a private/LAN/tailnet address. "
-              "It's saved in config/models.yaml — don't commit that file to a "
-              "public repo with a private address in it; prefer setting "
-              "AISHIELD_LM_URL in your shell instead.")
+    print(f"\nmodel config saved: {path}")
     print(json.dumps(cfg, indent=1))
-    verdict, p, used = ai.decide_noul(
-        "A test probe: the sky is blue on a clear day.",
-        "Is the sky blue on a clear day? 'yes' means it is blue.")
-    layer = (f"answering as {used} (p_yes={p})" if verdict
-             else "not answering (fail-open — scans still work)")
-    print(f"decision layer: {layer}")
-    tri = ai.triage_model() or "offline (no chat model loaded)"
-    print(f"triage layer: {tri}")
+    print(f"targets now: {', '.join(inventory.targets())}")
+    tri = ai.triage_model() or "offline (no chat model reachable)"
+    print(f"main model: {tri}")
+    if cfg["roles"]["decision"]["model"]:
+        verdict, p, used = ai.decide_noul(
+            "A test probe: the sky is blue on a clear day.",
+            "Is the sky blue on a clear day? 'yes' means it is blue.")
+        layer = (f"answering as {used} (p_yes={p})" if verdict
+                 else "not answering (fail-open — scans still work)")
+        print(f"decision layer: {layer}")
+    else:
+        print("decision layer: main model (chat fallback)")
 
 
 BANNER = "🛡️  AI Shield — CVE Now + KEV + OSV scanner/patcher"
@@ -242,10 +321,11 @@ USAGE = """usage: aishield <command> [options]
   status                 feeds + model server + AI layer health
   latest                 newest CVEs from CVE Now (--source kev|critical|all)
   cve <CVE-ID>           full detail on one CVE
-  scan <target>          scan vm|mac|batman|grievous|all (--program X, --ai)
+  scan <target>          scan local|<configured host>|all (--program X, --ai)
   patch <target>         dry-run patch plan; --apply executes (held steps stay held)
   models                 show the model configuration
   setup                  wizard: set the model server + models
+  settings               settings page in your browser (models + machines)
 
 Models are swappable — config/models.yaml or env vars; nothing is hardcoded."""
 
@@ -263,7 +343,7 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_latest)
     p = sub.add_parser("scan")
-    p.add_argument("target", choices=inventory.TARGETS + ["all"])
+    p.add_argument("target", choices=inventory.targets() + ["all"])
     p.add_argument("--program", default=None)
     p.add_argument("--ai", action="store_true")
     p.add_argument("--adjudicate", action=argparse.BooleanOptionalAction,
@@ -271,7 +351,7 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_scan)
     p = sub.add_parser("patch")
-    p.add_argument("target", choices=inventory.TARGETS)
+    p.add_argument("target", choices=inventory.targets())
     p.add_argument("--program", default=None)
     p.add_argument("--apply", action="store_true")
     p.set_defaults(fn=cmd_patch)
@@ -284,11 +364,23 @@ def main(argv=None):
     p.set_defaults(fn=cmd_models)
     p = sub.add_parser("hosts")
     p.set_defaults(fn=cmd_hosts)
+    p = sub.add_parser("settings")
+    p.add_argument("--port", type=int, default=8765,
+                   help="port for the local settings page (127.0.0.1 only)")
+    p.set_defaults(fn=cmd_settings)
     p = sub.add_parser("setup")
     p.add_argument("--server", default=None, help="model server base URL")
     p.add_argument("--triage", default=None, help="triage model id ('' = auto)")
     p.add_argument("--decision", default=None, help="decision model id")
     p.add_argument("--decision-fallback", default=None)
+    p.add_argument("--provider", default=None,
+                   choices=["lmstudio", "ollama", "llamacpp", "vllm", "openai", "custom"],
+                   help="provider preset for the model server URL")
+    p.add_argument("--api-key", default=None,
+                   help="API key for the model server ('' clears it)")
+    p.add_argument("--add-host", action="append", default=None,
+                   metavar="name:os:user@host[:port]",
+                   help="define a machine to scan (repeatable)")
     p.add_argument("--yes", action="store_true",
                    help="non-interactive: save given values without prompts")
     p.set_defaults(fn=cmd_setup)

@@ -22,20 +22,20 @@ TOOLS = [
          "limit": {"type": "integer", "default": 20}}}},
     {"name": "cve_detail", "description": "Full detail for one CVE id: CVE Now entry (incl. CISA SSVC), KEV status, NVD description/CVSS.",
      "inputSchema": {"type": "object", "properties": {"cve_id": {"type": "string"}}, "required": ["cve_id"]}},
-    {"name": "scan_target", "description": "Inventory one machine (vm|mac|batman|grievous) and match it against OSV + CVE Now + CISA KEV. Program filter optional. ai=true adds an LM Studio brief using an already-loaded model.",
+    {"name": "scan_target", "description": "Inventory one machine ('local' or a configured host) and match it against OSV + CVE Now + CISA KEV. Program filter optional. ai=true adds a brief from an already-loaded chat model.",
      "inputSchema": {"type": "object", "properties": {
-         "target": {"type": "string", "enum": inventory.TARGETS},
+         "target": {"type": "string", "enum": inventory.targets()},
          "program": {"type": "string"}, "ai": {"type": "boolean", "default": False},
          "adjudicate": {"type": "boolean", "default": False}}, "required": ["target"]}},
     {"name": "patch_plan", "description": "Dry-run patch plan for a target: exact commands per finding, nothing executed.",
      "inputSchema": {"type": "object", "properties": {
-         "target": {"type": "string", "enum": inventory.TARGETS},
+         "target": {"type": "string", "enum": inventory.targets()},
          "program": {"type": "string"}}, "required": ["target"]}},
     {"name": "patch_apply", "description": "Execute the auto patch plan for a target and re-scan to verify. Requires confirm=\"PATCH\".",
      "inputSchema": {"type": "object", "properties": {
-         "target": {"type": "string", "enum": inventory.TARGETS},
+         "target": {"type": "string", "enum": inventory.targets()},
          "program": {"type": "string"}, "confirm": {"type": "string"}}, "required": ["target", "confirm"]}},
-    {"name": "shield_status", "description": "Feed health (KEV catalog size/date, CVE Now reachability) and LM Studio AI layer status.",
+    {"name": "shield_status", "description": "Feed health (KEV catalog size/date, CVE Now reachability) and AI layer status.",
      "inputSchema": {"type": "object", "properties": {}}},
 ]
 
@@ -82,7 +82,7 @@ def call_tool(name, args):
         return _text({"kev_entries": len(kev_map), "kev_released": kev_date,
                       "lmstudio_loaded": models, "ai_model": ai.triage_model(models),
                       "model_config": cfgmod.load(),
-                      "targets": inventory.TARGETS})
+                      "targets": inventory.targets()})
     raise ValueError(f"unknown tool {name}")
 
 
