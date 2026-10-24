@@ -61,6 +61,78 @@ value has an env override (`AISHIELD_LM_URL`, `AISHIELD_API_KEY`,
 `AISHIELD_TRIAGE_MODEL`, `AISHIELD_DECISION_MODEL`,
 `AISHIELD_HOST_<NAME>=user@host[:port]`).
 
+## How it works
+
+One engine, three front doors (CLI, GUI, MCP server) — they all run
+the same pipeline:
+
+1. **Inventory.** Per-OS collectors list what's installed: apt/dpkg
+   (by *source* package with full distro versions), pip (recording the
+   exact interpreter each environment belongs to), npm globals,
+   Homebrew formulas/casks, macOS `/Applications`, and Windows
+   installed programs from the registry. Collection runs on the
+   machine itself for `local`, or over the built-in ssh transport for
+   enabled remote machines.
+2. **Matching (deterministic).** Packages are matched server-side
+   against **OSV** version ranges (`querybatch`, chunked), cross-checked
+   with **CVE Now** `check_stack`, and overlaid with the **CISA KEV**
+   catalog (known-exploited). Installed apps, which have no package
+   ecosystem, are name-matched against KEV with token-precise rules —
+   never substring matching — so "7-Zip" can't false-positive on
+   unrelated names. Every finding cites its sources; a feed outage
+   degrades to a *warning on the scan*, never a fake finding.
+3. **Ranking.** Known-exploited first, then severity and fix
+   availability, deduplicated across sources.
+4. **Patch planning.** One step per package to the highest fixed
+   version, with the correct route per manager (apt upgrade, pip via
+   the *inventoried* interpreter, `brew upgrade`, vendor/app-store
+   notes for the rest). Plans are dry-run by default.
+5. **Gated apply.** Applying needs an explicit confirm (`--apply`,
+   `confirm="PATCH"`, or typing PATCH in the GUI). Order of authority:
+   deterministic **lifeline rules** hold critical packages (kernel,
+   SSH, package manager, container runtimes) before anything else is
+   consulted; the **decision layer** then safety-checks each remaining
+   auto step; held steps are never auto-applied. Every action is
+   logged, a post-patch **re-scan verifies** the fix landed (the
+   rescan, not the exit code, is the source of truth), `pip check`
+   surfaces pin conflicts, and a **PDF report** of the run lands in
+   `data/reports/`.
+
+## How the AI works
+
+The AI is a reasoning layer over the deterministic results — it
+**never decides whether a version is vulnerable**. That is always
+OSV/CVE Now data. It has two swappable roles, both configured (never
+hardcoded) via the wizard, the settings page/GUI, config files, or
+env vars:
+
+- **Main (triage) model** — any chat model on your OpenAI-compatible
+  server. Writes the scan brief (`--ai` / GUI): what is exposed, what
+  an attacker gets, the exact fix, what can wait. Also serves as the
+  decision fallback (below).
+- **Decision model** (optional) — makes the two judgment calls a scan
+  needs:
+  1. *Adjudication:* app findings start as name-match **candidates**
+     (KEV has no version ranges). The decision layer answers "is this
+     installed app the product the KEV entry refers to?" — unconfirmed
+     candidates never enter the auto patch plan.
+  2. *Patch-step safety:* each auto step gets allow/hold. When in
+     doubt, hold.
+
+  Two ways to answer: if your server exposes a **typed decision
+  endpoint** (`POST /v1/systemone`-style: `{model, state, questions}`
+  → calibrated probabilities, thresholds yes ≥ 0.75 / no ≤ 0.30),
+  name its model in setup. Otherwise the same questions go to the
+  **main chat model** with a strict one-word answer format.
+
+Safety properties: the layer is **fail-open** (no answer → no
+decisions, scans proceed; a circuit breaker mutes it for 60 s after a
+connection failure so a down server can't tax every step), lifeline
+holds fire **before and regardless of** any AI answer, and the shield
+**never loads a model** — it only uses models your server already
+serves. Prompts carry only the finding data, and they go only to the
+server *you* configured.
+
 ## Why it's built this way
 
 - **Verdicts are deterministic.** Whether you're affected is decided by
@@ -160,6 +232,9 @@ Register it with any MCP client as a stdio server with command
 
 ## Changelog
 
+- **0.7.1** — README: full "How it works" pipeline walkthrough and
+  "How the AI works" section (roles, adjudication, decision
+  thresholds, fail-open rules).
 - **0.7.0** — desktop GUI: `aishield gui` serves a Hermes-style web
   app (dashboard, scan, patch with gated apply + PDF reports, latest
   CVEs, CVE lookup, full settings) on 127.0.0.1 and opens it in the
