@@ -111,7 +111,7 @@ def cmd_status(args):
           f"-> {ai.triage_model(models) or 'offline'}")
     dec = cfg["roles"]["decision"]
     print(f"decision role: {dec['model']} (fallback {dec.get('fallback')}) "
-          f"via {dec.get('endpoint')}")
+          f"protocol {dec.get('protocol') or 'auto'}")
     verdict, p, used = ai.decide_noul(
         "A test probe: the sky is blue on a clear day.",
         "Is the sky blue on a clear day? 'yes' means it is blue.")
@@ -216,6 +216,8 @@ def cmd_setup(args):
         cfg["roles"]["decision"]["model"] = args.decision or None
     if args.decision_fallback is not None:
         cfg["roles"]["decision"]["fallback"] = args.decision_fallback or None
+    if getattr(args, "decision_protocol", None):
+        cfg["roles"]["decision"]["protocol"] = args.decision_protocol
     for spec in (getattr(args, "add_host", None) or []):
         # name:os:user@host[:port]
         try:
@@ -268,8 +270,10 @@ def cmd_setup(args):
             print("vulnerable product? may this patch run unattended?). If your")
             print("server exposes a typed decision endpoint, name its model;")
             print("otherwise skip — decisions fall back to the main model.")
+            typed = ai.decision_typed_models()
             dec_opts = [(None, "none — use the main model for decisions")]
-            dec_opts += [(m, m) for m in loaded]
+            dec_opts += [(m, f"{m}  (decision model)") for m in typed]
+            dec_opts += [(m, m) for m in loaded if m not in typed]
             dec_opts.append(("__custom__", "type a model id manually"))
             cur = cfg["roles"]["decision"]["model"]
             di = next((i for i, (v, _) in enumerate(dec_opts) if v == cur), 0)
@@ -281,6 +285,14 @@ def cmd_setup(args):
                 fb = _ask("decision fallback model (blank = none)",
                           cfg["roles"]["decision"].get("fallback") or "")
                 cfg["roles"]["decision"]["fallback"] = fb or None
+                proto = _pick("decision protocol:", [
+                    ("auto", "auto — /v1/decisions first, then /v1/systemone (recommended)"),
+                    ("decisions", "/v1/decisions — OpenAI-compatible (LM Studio 0.4.26+)"),
+                    ("systemone", "/v1/systemone — Jev wire (LM Studio / Ollama)"),
+                    ("chat", "chat only — no typed endpoint")],
+                    ["auto", "decisions", "systemone", "chat"].index(
+                        cfg["roles"]["decision"].get("protocol") or "auto"))
+                cfg["roles"]["decision"]["protocol"] = proto
         else:
             print("\nserver not reachable right now — that's fine, save now")
             print("and the shield picks models up when the server is up.")
@@ -398,6 +410,9 @@ def main(argv=None):
     p.add_argument("--provider", default=None,
                    choices=["lmstudio", "ollama", "llamacpp", "vllm", "openai", "custom"],
                    help="provider preset for the model server URL")
+    p.add_argument("--decision-protocol", default=None,
+                   choices=["auto", "decisions", "systemone", "chat"],
+                   help="decision wire: auto tries /v1/decisions then /v1/systemone")
     p.add_argument("--api-key", default=None,
                    help="API key for the model server ('' clears it)")
     p.add_argument("--add-host", action="append", default=None,

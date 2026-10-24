@@ -5,10 +5,13 @@
               writes prose briefs. Uses only models ALREADY LOADED on the
               server; never triggers a load. Unset = auto-pick strongest.
   decision  — typed decisions (noul / choice) with calibrated
-              probabilities from an optional decision endpoint
-              (POST /v1/systemone-style), falling back to the triage
-              chat model in prose. Fail-open: if nothing answers, scans
-              proceed without decisions.
+              probabilities from an optional decision endpoint:
+              /v1/decisions (OpenAI-compatible; LM Studio 0.4.26+)
+              or /v1/systemone (Jev wire; LM Studio / Ollama),
+              selected by config protocol (auto = decisions first),
+              falling back to the triage chat model in prose.
+              Fail-open: if nothing answers, scans proceed without
+              decisions.
 
 Fleet law: AI never decides whether a package version is vulnerable —
 deterministic feed data does that. AI decides identity, priority, and
@@ -134,36 +137,107 @@ def triage(findings, target, model=None):
 import time as _time
 
 _decision_dead_until = 0.0
+_last_via = 'decision'
+
+
+def _post_decisions(model, endpoint, state, questions, timeout):
+    """OpenAI-compatible decisions wire (LM Studio 0.4.26+): questions
+    as an ARRAY; noul -> predicate; answers keyed by name."""
+    qlist = []
+    for name, q in questions.items():
+        item = {"name": name, "instructions": q["instructions"]}
+        if q["type"] == "noul":
+            item["type"] = "predicate"
+        elif q["type"] == "choice":
+            item["type"] = "choice"
+            item["choices"] = [{"value": v, "description": d}
+                                for v, d in (q.get("criteria") or {}).items()]
+        else:
+            item["type"] = q["type"]
+        qlist.append(item)
+    r = requests.post(server_url() + endpoint,
+                      json={"model": model, "input": state, "questions": qlist},
+                      proxies=_proxies(), headers=_headers(), timeout=timeout)
+    if r.status_code != 200:
+        return None
+    answers = {}
+    for a in r.json().get("answers") or []:
+        name = a.get("name")
+        if a.get("type") == "predicate" and isinstance(a.get("probability"), (int, float)):
+            answers[name] = {"noul": a["probability"]}
+        elif a.get("type") == "choice":
+            probs = {p["value"]: p["probability"]
+                     for p in a.get("probabilities") or []
+                     if isinstance(p.get("probability"), (int, float))}
+            answers[name] = {"choice": a.get("choice"), "probabilities": probs}
+    return answers or None
+
+
+def _post_systemone(model, endpoint, state, questions, timeout):
+    """Jev / SystemOne wire: questions as a MAP; noul/choice types."""
+    r = requests.post(server_url() + endpoint,
+                      json={"model": model, "state": state,
+                            "questions": questions},
+                      proxies=_proxies(), headers=_headers(), timeout=timeout)
+    if r.status_code != 200:
+        return None
+    answers = r.json().get("answers")
+    return answers if isinstance(answers, dict) and answers else None
 
 
 def decision_answers(state, questions, timeout=20):
-    """POST the configured decision endpoint. Returns answers dict or None.
-    Tries the configured decision model, then its configured fallback.
-    Circuit breaker: a connection failure mutes the layer for 60 s so a
-    down server can't tax every candidate/step in a scan with timeouts."""
-    global _decision_dead_until
+    """Ask the configured decision protocol. Returns
+    {"answers": {...}, "model": id, "via": protocol} or None.
+
+    Protocols (config roles.decision.protocol):
+      decisions — POST /v1/decisions (OpenAI-compatible; LM Studio
+                  0.4.26+ serves it natively for decision models)
+      systemone — POST /v1/systemone (Jev wire; LM Studio 0.4.26+ and
+                  Ollama serve it; the legacy path, being superseded
+                  by /v1/decisions upstream)
+      auto      — decisions first, then systemone (default)
+      chat      — no typed endpoint; callers fall back to the chat model
+    Tries the configured decision model, then its fallback. Circuit
+    breaker: a connection failure mutes the layer for 60 s so a down
+    server can't tax every candidate/step in a scan with timeouts."""
+    global _decision_dead_until, _last_via
     if _time.time() < _decision_dead_until:
         return None
     cfg = cfgmod.load()["roles"]["decision"]
-    endpoint = cfg.get("endpoint") or "/v1/systemone"
+    protocol = (cfg.get("protocol") or "auto").lower()
+    if protocol == "chat":
+        return None
+    wires = {"decisions": (_post_decisions, cfg.get("decisions_endpoint") or "/v1/decisions"),
+             "systemone": (_post_systemone, cfg.get("endpoint") or "/v1/systemone")}
+    order = ["decisions", "systemone"] if protocol == "auto" else [protocol]
     for model in [cfg.get("model"), cfg.get("fallback")]:
         if not model:
             continue
-        try:
-            r = requests.post(server_url() + endpoint,
-                              json={"model": model, "state": state,
-                                    "questions": questions},
-                              proxies=_proxies(), headers=_headers(),
-                              timeout=timeout)
-            if r.status_code != 200:
-                continue
-            answers = r.json().get("answers")
-            if isinstance(answers, dict) and answers:
-                return {"answers": answers, "model": model}
-        except Exception:
-            _decision_dead_until = _time.time() + 60
-            continue
+        for name in order:
+            fn, endpoint = wires[name]
+            try:
+                answers = fn(model, endpoint, state, questions, timeout)
+            except Exception:
+                _decision_dead_until = _time.time() + 60
+                return None
+            if answers:
+                _last_via = name
+                return {"answers": answers, "model": model, "via": name}
     return None
+
+
+def decision_typed_models():
+    """Models the server itself types as 'decision' (LM Studio's
+    /api/v1/models), best-effort — [] on any other server."""
+    try:
+        r = requests.get(server_url() + "/api/v1/models",
+                         proxies=_proxies(), headers=_headers(), timeout=8)
+        if r.status_code != 200:
+            return []
+        return [m["key"] for m in r.json().get("models") or []
+                if m.get("type") == "decision" and m.get("key")]
+    except Exception:
+        return []
 
 
 def decide_noul(state, instructions):
@@ -211,7 +285,7 @@ def adjudicate(app_name, app_version, kev_entry):
                     "a name or a word.")
     verdict, p, model = decide_noul(state, instructions)
     if verdict:
-        return verdict, {"p_yes": p, "model": model, "via": "decision"}
+        return verdict, {"p_yes": p, "model": model, "via": _last_via}
     try:
         out = chat([{"role": "system", "content": SYSTEM},
                     {"role": "user", "content": state + "\nIs the installed application "
@@ -245,7 +319,7 @@ def decide_patch_step(step):
         "Decide whether this patch step may be auto-applied or must be held "
         "for a human. When in doubt, hold.", criteria)
     if label:
-        return label, {"probabilities": probs, "model": model, "via": "decision"}
+        return label, {"probabilities": probs, "model": model, "via": _last_via}
     # Chat fallback: any loaded chat model can make the same call in
     # prose. Strict one-word answer; anything unclear means no decision
     # (the caller treats silence as fail-open, and lifelines already

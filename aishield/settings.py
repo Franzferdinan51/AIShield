@@ -67,8 +67,15 @@ __SAVED__
 <label for="decision_fallback">Decision fallback model</label>
 <input id="decision_fallback" name="decision_fallback" value="__DECISION_FALLBACK__">
 </div><div>
-<label for="endpoint">Decision endpoint path</label>
+<label for="endpoint">Decision endpoint path (systemone wire)</label>
 <input id="endpoint" name="endpoint" value="__ENDPOINT__">
+<label for="protocol">Decision protocol</label>
+<select id="protocol" name="protocol">
+ <option value="auto" __PROTO_AUTO__>auto — /v1/decisions, then /v1/systemone</option>
+ <option value="decisions" __PROTO_DECISIONS__>/v1/decisions (OpenAI-compatible)</option>
+ <option value="systemone" __PROTO_SYSTEMONE__>/v1/systemone (Jev wire)</option>
+ <option value="chat" __PROTO_CHAT__>chat only — no typed endpoint</option>
+</select>
 </div></div>
 <h2>Machines to scan</h2>
 <label><input type="checkbox" name="local_enabled" __LOCAL_CHECKED__ style="width:auto">
@@ -138,6 +145,10 @@ def render(saved=False):
             ("__DECISION__", _esc(roles["decision"].get("model"))),
             ("__DECISION_FALLBACK__", _esc(roles["decision"].get("fallback"))),
             ("__ENDPOINT__", _esc(roles["decision"].get("endpoint") or "/v1/systemone")),
+            ("__PROTO_AUTO__", "selected" if (roles["decision"].get("protocol") or "auto") == "auto" else ""),
+            ("__PROTO_DECISIONS__", "selected" if roles["decision"].get("protocol") == "decisions" else ""),
+            ("__PROTO_SYSTEMONE__", "selected" if roles["decision"].get("protocol") == "systemone" else ""),
+            ("__PROTO_CHAT__", "selected" if roles["decision"].get("protocol") == "chat" else ""),
             ("__MODEL_OPTIONS__", "".join(f'<option value="{_esc(m)}">' for m in models)),
             ("__LOCAL_CHECKED__", "checked" if transport.local_enabled() else ""),
             ("__HOST_ROWS__", rows)):
@@ -166,6 +177,7 @@ def _save(form):
     cfg["roles"]["decision"]["model"] = one("decision") or None
     cfg["roles"]["decision"]["fallback"] = one("decision_fallback") or None
     cfg["roles"]["decision"]["endpoint"] = one("endpoint") or "/v1/systemone"
+    cfg["roles"]["decision"]["protocol"] = one("protocol") or "auto"
     cfgmod.save(cfg)
     entries = {}
     names = form.get("h_name") or []

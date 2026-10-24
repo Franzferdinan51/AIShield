@@ -25,8 +25,9 @@ DEFAULTS = {
     "server": {"url": "http://localhost:1234"},
     "roles": {
         "triage": {"model": None},
-        "decision": {"model": None, "fallback": None,
-                     "endpoint": "/v1/systemone"},
+        "decision": {"model": None, "fallback": None, "protocol": "auto",
+                     "endpoint": "/v1/systemone",
+                     "decisions_endpoint": "/v1/decisions"},
     },
 }
 

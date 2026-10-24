@@ -15,4 +15,6 @@ roles:
   decision:
     model: null
     fallback: null
+    protocol: auto
     endpoint: /v1/systemone
+    decisions_endpoint: /v1/decisions

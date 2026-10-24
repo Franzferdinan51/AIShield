@@ -119,11 +119,16 @@ env vars:
   2. *Patch-step safety:* each auto step gets allow/hold. When in
      doubt, hold.
 
-  Two ways to answer: if your server exposes a **typed decision
-  endpoint** (`POST /v1/systemone`-style: `{model, state, questions}`
-  → calibrated probabilities, thresholds yes ≥ 0.75 / no ≤ 0.30),
-  name its model in setup. Otherwise the same questions go to the
-  **main chat model** with a strict one-word answer format.
+  Three ways to answer, picked by the `protocol` setting (default
+  `auto`): **`/v1/decisions`** — the OpenAI-compatible decisions
+  endpoint (LM Studio 0.4.26+ serves it natively for decision-typed
+  models; questions are `predicate`/`choice`, answers carry
+  probabilities, zero output tokens); **`/v1/systemone`** — the Jev
+  wire (LM Studio 0.4.26+ and Ollama serve it; `{model, state,
+  questions}` → calibrated probabilities, thresholds yes ≥ 0.75 /
+  no ≤ 0.30; upstream is superseding it with `/v1/decisions`, so
+  `auto` tries decisions first); otherwise the same questions go to
+  the **main chat model** with a strict one-word answer format.
 
 Safety properties: the layer is **fail-open** (no answer → no
 decisions, scans proceed; a circuit breaker mutes it for 60 s after a
@@ -232,6 +237,12 @@ Register it with any MCP client as a stdio server with command
 
 ## Changelog
 
+- **0.8.0** — LM Studio decision endpoints: the decision layer speaks
+  `/v1/decisions` (OpenAI-compatible, LM Studio 0.4.26+) in addition
+  to the `/v1/systemone` Jev wire, selected by a new `protocol`
+  setting (auto/decisions/systemone/chat) in the wizard, settings
+  page and GUI; decision-typed models from the server's catalog are
+  floated first in the wizard's picker.
 - **0.7.1** — README: full "How it works" pipeline walkthrough and
   "How the AI works" section (roles, adjudication, decision
   thresholds, fail-open rules).

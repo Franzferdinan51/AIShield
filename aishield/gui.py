@@ -147,6 +147,8 @@ def api_config_save(body):
     cfg["roles"]["decision"]["fallback"] = body.get("decision_fallback") or None
     if body.get("endpoint"):
         cfg["roles"]["decision"]["endpoint"] = body["endpoint"]
+    if body.get("protocol"):
+        cfg["roles"]["decision"]["protocol"] = body["protocol"]
     cfgmod.save(cfg)
     entries = {}
     for h in body.get("hosts") or []:
@@ -366,7 +368,8 @@ async function loadSettings(){
  <div><label>Decision model (optional)</label><input id="s-decision" list="s-models" value="${esc(c.roles.decision.model||'')}"></div></div>
  <datalist id="s-models">${(await api('/api/models')).map(m=>`<option value="${esc(m)}">`).join('')}</datalist>
  <div class="row"><div><label>Decision fallback</label><input id="s-fb" value="${esc(c.roles.decision.fallback||'')}"></div>
- <div><label>Decision endpoint</label><input id="s-ep" value="${esc(c.roles.decision.endpoint||'/v1/systemone')}"></div></div>
+ <div><label>Decision endpoint (systemone wire)</label><input id="s-ep" value="${esc(c.roles.decision.endpoint||'/v1/systemone')}"></div></div>
+ <div class="row"><div><label>Decision protocol</label><select id="s-proto">${['auto','decisions','systemone','chat'].map(p=>`<option value="${p}" ${((c.roles.decision.protocol||'auto')===p)?'selected':''}>${p==='auto'?'auto — /v1/decisions, then /v1/systemone':p}</option>`).join('')}</select></div></div>
  <h2>Machines</h2>
  <label style="font-weight:400"><input type="checkbox" id="s-local" ${c.local_enabled?'checked':''} style="width:auto"> <b>This device</b> — scan this machine (recommended; it's how antivirus-style tools work)</label>
  <p class="dim">Remote machines scan only with their “scan enabled” box checked.</p>
@@ -388,7 +391,7 @@ function hostRow(h){
 function addHostRow(){$('#s-hosts').insertAdjacentHTML('beforeend',hostRow({}));}
 async function saveSettings(){
  const hosts=$$('#s-hosts .host').map(el=>({name:el.querySelector('.h-name').value,os:el.querySelector('.h-os').value,host:el.querySelector('.h-host').value,user:el.querySelector('.h-user').value,port:el.querySelector('.h-port').value,proxy:el.querySelector('.h-proxy').value,enabled:el.querySelector('.h-enabled').checked}));
- const body={server:{url:$('#s-url').value,api_key:$('#s-key').value},triage:$('#s-triage').value,decision:$('#s-decision').value,decision_fallback:$('#s-fb').value,endpoint:$('#s-ep').value,local_enabled:$('#s-local').checked,hosts};
+ const body={server:{url:$('#s-url').value,api_key:$('#s-key').value},triage:$('#s-triage').value,decision:$('#s-decision').value,decision_fallback:$('#s-fb').value,endpoint:$('#s-ep').value,protocol:$('#s-proto').value,local_enabled:$('#s-local').checked,hosts};
  const r=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  $('#s-msg').textContent=r.saved?'saved ✓ targets: '+r.targets.join(', '):'error';
  loadStatus();
