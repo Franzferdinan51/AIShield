@@ -93,3 +93,16 @@ command `python3 -m aishield.mcp_server` and cwd set to this repo.
   uses the local model to confirm product identity.
 - Windows patching is report-only in v0.1 (inventory + findings work;
   winget automation is on the roadmap).
+
+## Changelog
+
+- **0.3.0** — end-to-end hardening pass: decision-layer circuit breaker
+  (a down model server no longer taxes scans), fail-soft AI brief and
+  adjudication fallbacks, `cve` reports an explicit not-found, version
+  surfaced in status/MCP, wizard warns before saving a private server
+  address, MCP end-to-end test in `tests/mcp_e2e.py`.
+- **0.2.0** — swappable AI roles (`config/models.yaml` + `aishield setup`
+  wizard + env overrides); decision-model checks during scans
+  (candidate adjudication + patch-step safety decisions + lifeline holds).
+- **0.1.0** — initial release: KEV + OSV + CVE Now scanning, gated patching,
+  CLI + MCP.

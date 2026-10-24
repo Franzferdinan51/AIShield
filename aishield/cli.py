@@ -70,13 +70,22 @@ def cmd_cve(args):
     kev_map, _ = feeds.kev()
     out["kev"] = kev_map.get(args.cve_id)
     out["nvd"] = feeds.nvd_cve(args.cve_id)
+    found = bool(out["kev"]) or bool(out["nvd"]) or (
+        isinstance(out["cvenow"], dict) and out["cvenow"]
+        and "error" not in out["cvenow"] and out["cvenow"].get("id"))
+    out["found"] = found
     print(json.dumps(out, indent=1, default=str))
+    if not found:
+        print(f"note: {args.cve_id} not found in CVE Now, KEV, or NVD "
+              "(check the id — or it may be reserved/unpublished)")
 
 
 def cmd_status(args):
+    from . import __version__
     kev_map, kev_date = feeds.kev()
     models = ai.loaded_models()
     cfg = cfgmod.load()
+    print(f"AI Shield v{__version__}")
     print(f"KEV catalog: {len(kev_map)} entries, released {kev_date}")
     print(f"model server: {cfg['server']['url']}")
     print(f"loaded models: {models or 'none reachable'}")
@@ -187,6 +196,12 @@ def cmd_setup(args):
             cfg["roles"]["decision"]["model"] = dec or None
     path = cfgmod.save(cfg)
     print(f"\nsaved: {path}")
+    url = cfg["server"]["url"]
+    if any(tok in url for tok in ("100.", "192.168.", "10.", "172.16.", ".local")):
+        print("note: that server URL looks like a private/LAN/tailnet address. "
+              "It's saved in config/models.yaml — don't commit that file to a "
+              "public repo with a private address in it; prefer setting "
+              "AISHIELD_LM_URL in your shell instead.")
     print(json.dumps(cfg, indent=1))
     verdict, p, used = ai.decide_noul(
         "A test probe: the sky is blue on a clear day.",

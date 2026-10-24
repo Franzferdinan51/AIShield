@@ -103,14 +103,29 @@ def triage(findings, target, model=None):
               "1) overall exposure in 2 sentences, 2) the top risks ranked, with "
               "for each: what's exposed, what an attacker gets, the exact fix, "
               "3) what can wait. Keep it tight.\n\n" + json.dumps(slim, indent=1))
-    return chat([{"role": "system", "content": SYSTEM},
-                 {"role": "user", "content": prompt}], model=model, max_tokens=1600)
+    try:
+        return chat([{"role": "system", "content": SYSTEM},
+                     {"role": "user", "content": prompt}], model=model,
+                    max_tokens=1600)
+    except Exception as e:
+        # The brief is optional garnish — never let it kill a scan.
+        return f"(AI brief unavailable: {str(e)[:120]})"
 
 
 # ------------------------------------------------------------------ decision (SystemOne wire)
+import time as _time
+
+_decision_dead_until = 0.0
+
+
 def decision_answers(state, questions, timeout=20):
     """POST the configured decision endpoint. Returns answers dict or None.
-    Tries the configured decision model, then its configured fallback."""
+    Tries the configured decision model, then its configured fallback.
+    Circuit breaker: a connection failure mutes the layer for 60 s so a
+    down server can't tax every candidate/step in a scan with timeouts."""
+    global _decision_dead_until
+    if _time.time() < _decision_dead_until:
+        return None
     cfg = cfgmod.load()["roles"]["decision"]
     endpoint = cfg.get("endpoint") or "/v1/systemone"
     for model in [cfg.get("model"), cfg.get("fallback")]:
@@ -127,6 +142,7 @@ def decision_answers(state, questions, timeout=20):
             if isinstance(answers, dict) and answers:
                 return {"answers": answers, "model": model}
         except Exception:
+            _decision_dead_until = _time.time() + 60
             continue
     return None
 
@@ -177,10 +193,13 @@ def adjudicate(app_name, app_version, kev_entry):
     verdict, p, model = decide_noul(state, instructions)
     if verdict:
         return verdict, {"p_yes": p, "model": model, "via": "decision"}
-    out = chat([{"role": "system", "content": SYSTEM},
-                {"role": "user", "content": state + "\nIs the installed application "
-                 "the same product the KEV entry refers to? Answer with exactly "
-                 "one word: yes, no, or unsure."}], max_tokens=8, timeout=120)
+    try:
+        out = chat([{"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": state + "\nIs the installed application "
+                     "the same product the KEV entry refers to? Answer with exactly "
+                     "one word: yes, no, or unsure."}], max_tokens=8, timeout=30)
+    except Exception:
+        out = None
     if not out:
         return "unsure", {"via": "none"}
     word = out.strip().lower().split()[0].strip(".,")

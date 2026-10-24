@@ -107,7 +107,7 @@ def nvd_cve(cve_id):
     """CVE detail from NVD: description, CVSS base score, weaknesses. Best-effort."""
     try:
         r = requests.get(NVD_URL, params={"cveId": cve_id}, timeout=30,
-                         headers={"User-Agent": "aishield/0.1"})
+                         headers={"User-Agent": "aishield"})
         r.raise_for_status()
         vulns = r.json().get("vulnerabilities", [])
         if not vulns:

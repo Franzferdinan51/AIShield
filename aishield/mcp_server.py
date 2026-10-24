@@ -12,7 +12,7 @@ Tools:
 import json
 import sys
 
-from . import ai, cvenow, engine, feeds, inventory, patch
+from . import __version__, ai, cvenow, engine, feeds, inventory, patch
 
 TOOLS = [
     {"name": "latest_cves", "description": "Newest CVEs from CVE Now feeds (critical/kev/all), optionally filtered by ecosystem (pypi, npm) or tech slug.",
@@ -98,7 +98,7 @@ def main():
         method, rid = req.get("method"), req.get("id")
         if method == "initialize":
             resp = {"protocolVersion": "2025-03-26",
-                    "serverInfo": {"name": "aishield", "version": "0.1.0"},
+                    "serverInfo": {"name": "aishield", "version": __version__},
                     "capabilities": {"tools": {}}}
         elif method == "tools/list":
             resp = {"tools": TOOLS}
