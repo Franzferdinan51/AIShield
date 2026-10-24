@@ -119,3 +119,8 @@ command `python3 -m aishield.mcp_server` and cwd set to this repo.
 - **0.4.0** — `aishield` is now the terminal command: bare run shows banner +
   live status + usage, `--version` added, pyproject packaging with a
   console entry point (`pip install -e .` registers `aishield` on PATH).
+- **0.4.1** — self-host fix: scanning/patching the machine the shield itself
+  runs on (e.g. `aishield scan mac` on the Mac, which is also what Batman's
+  launcher reaches) no longer routes through the VM-side ssh wrappers that
+  don't exist there; self-targets collect and patch locally, missing
+  wrappers produce a clean error instead of a traceback.

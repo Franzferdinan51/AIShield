@@ -126,10 +126,14 @@ def build_plan(findings, decide=False):
 
 
 def _exec(target, command, timeout=600):
-    if target == "vm":
+    from . import inventory
+    if target == "vm" or target == inventory.this_host():
         p = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
     else:
         wrapper = os.path.expanduser(SSH[target])
+        if not os.path.exists(wrapper):
+            return 127, "", (f"no wrapper {SSH[target]} on this machine — "
+                             "run aishield from the VM or the Mac")
         p = subprocess.run([wrapper, command], capture_output=True, text=True, timeout=timeout)
     return p.returncode, (p.stdout or "")[-2000:], (p.stderr or "")[-1000:]
 

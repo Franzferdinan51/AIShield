@@ -36,6 +36,10 @@ def run_scan(target, program=None, use_ai=False, adjudicate_apps=True):
     kev_map, kev_date = feeds.kev()
     findings = match.scan_packages(items, kev_map)
     findings += match.scan_apps(items, kev_map)
+    # Feed failures ride along as confidence="error" pseudo-findings; they
+    # are warnings, not findings — keep them out of counts, plans, reports.
+    warnings = [f["summary"] for f in findings if f.get("confidence") == "error"]
+    findings = [f for f in findings if f.get("confidence") != "error"]
     if adjudicate_apps:
         kept = []
         for f in findings:
@@ -56,7 +60,8 @@ def run_scan(target, program=None, use_ai=False, adjudicate_apps=True):
         "target": target, "scanned_at": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "inventory_count": len(items), "program_filter": program,
         "kev_catalog_date": kev_date,
-        "findings": findings, "plan": patch.build_plan(findings, decide=True),
+        "findings": findings, "warnings": warnings,
+        "plan": patch.build_plan(findings, decide=True),
         "elapsed_s": round(time.time() - started, 1),
     }
     if use_ai:
@@ -102,4 +107,6 @@ def format_report(result):
             lines.append(f"  {p['name']}: {p['note']}")
     if result.get("ai_brief"):
         lines.append(f"\nAI brief ({result.get('ai_model')}):\n{result['ai_brief']}")
+    for w in result.get("warnings") or []:
+        lines.append(f"warning: a feed cross-check was unavailable ({w[:120]})")
     return "\n".join(lines)

@@ -37,18 +37,30 @@ def cmd_latest(args):
 
 def cmd_scan(args):
     targets = inventory.TARGETS if args.target == "all" else [args.target]
+    failed = False
     for t in targets:
-        result = engine.run_scan(t, program=args.program, use_ai=args.ai,
-                                 adjudicate_apps=args.adjudicate)
+        try:
+            result = engine.run_scan(t, program=args.program, use_ai=args.ai,
+                                     adjudicate_apps=args.adjudicate)
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
+            failed = True
+            continue
         if args.json:
             print(json.dumps(result, indent=1, default=str))
         else:
             print(engine.format_report(result))
             print()
+    if failed and len(targets) == 1:
+        sys.exit(2)
 
 
 def cmd_patch(args):
-    result = engine.run_scan(args.target, program=args.program)
+    try:
+        result = engine.run_scan(args.target, program=args.program)
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(2)
     if not args.apply:
         print(engine.format_report(result))
         print("\n(dry run — re-run with --apply to execute the auto patch plan)")
