@@ -1,0 +1,20 @@
+# AI Shield model configuration — no models are baked into the program.
+# Run `aishield setup` to pick yours, or edit here / in the untracked
+# config/models.local.yaml. Every role may stay unset:
+#   triage   — unset = auto-pick the strongest chat model your server
+#              has loaded; used for prose briefs and as the decision
+#              fallback.
+#   decision — unset = decisions use the triage chat model. Set it when
+#              your server exposes a typed decision endpoint
+#              (POST /v1/systemone-style calibrated answers).
+server:
+  url: http://localhost:1234
+roles:
+  triage:
+    model: null
+  decision:
+    model: null
+    fallback: null
+    protocol: auto
+    endpoint: /v1/systemone
+    decisions_endpoint: /v1/decisions

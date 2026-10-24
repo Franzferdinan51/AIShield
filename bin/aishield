@@ -1,0 +1,24 @@
+#!/bin/sh
+# AI Shield launcher. Resolves symlinks so `aishield` works when
+# linked onto PATH, then runs the CLI with the first Python that can
+# import the shield's dependencies. Callers with sanitized
+# environments (agent plugin hosts, cron, launchd) may resolve a
+# bare `python3` that lacks the deps even when a suitable Python is
+# installed — probe instead of assuming. AISHIELD_PYTHON overrides.
+src="$0"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+done
+root="$(cd -P "$(dirname "$src")/.." && pwd)"
+for py in "$AISHIELD_PYTHON" python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+  [ -n "$py" ] || continue
+  command -v "$py" >/dev/null 2>&1 || continue
+  if "$py" -c "import yaml, requests, packaging" 2>/dev/null; then
+    cd "$root" && exec "$py" -m aishield.cli "$@"
+  fi
+done
+echo "aishield: no Python found with the required packages (pyyaml, requests, packaging)." >&2
+echo "install them with:  python3 -m pip install pyyaml requests packaging" >&2
+exit 2

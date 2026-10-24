@@ -1,0 +1,10 @@
+data/kev.json
+data/osv-cache/
+data/patch-log.jsonl
+__pycache__/
+*.pyc
+
+data/reports/
+config/hosts.local.yaml
+config/models.local.yaml
+config/targets.local.yaml
