@@ -237,8 +237,14 @@ def target_kind(target):
 
 
 def targets():
-    """All scannable targets: this machine plus every configured host."""
-    return ["local"] + sorted(transport.hosts())
+    """Enabled scan targets. 'local' (this machine) is enabled unless
+    the user unchecked it; remote machines are OPT-IN — an entry only
+    counts when its hosts config carries enabled: true. The shield is
+    designed to run on each machine itself, not to sweep remotes."""
+    out = ["local"] if transport.local_enabled() else []
+    out += sorted(name for name, entry in transport.hosts().items()
+                  if entry.get("enabled"))
+    return out
 
 
 # Backwards-compatible alias for callers that read a static list.

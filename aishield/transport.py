@@ -45,7 +45,8 @@ def hosts():
                 merged.update({k: v for k, v in entry.items()
                                if v is not None})
                 cfg[target] = merged
-    cfg = {t: e for t, e in cfg.items() if e.get("host") and e.get("user")}
+    cfg = {t: e for t, e in cfg.items()
+           if t != "local" and e.get("host") and e.get("user")}
     for target in cfg:
         env = os.environ.get("AISHIELD_HOST_" + target.upper())
         if env:  # user@host[:port]
@@ -64,6 +65,41 @@ def describe():
     return hosts()
 
 
+def local_enabled():
+    """Whether 'local' (this machine) is a scan target. Stored as a
+    reserved 'local' entry in hosts.local.yaml ({enabled: bool});
+    default True — running on the machine itself is the recommended
+    way to use the shield."""
+    for name in ("hosts.local.yaml", "hosts.yaml"):
+        doc = _load_file(name) or {}
+        entry = doc.get("local")
+        if isinstance(entry, dict) and "enabled" in entry:
+            return bool(entry["enabled"])
+    return True
+
+
+def _write_hosts(doc):
+    path = os.path.join(BASE, "config", "hosts.local.yaml")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        yaml.safe_dump(doc, f, sort_keys=False)
+    os.replace(tmp, path)
+    return path
+
+
+def save_local_enabled(enabled):
+    path = os.path.join(BASE, "config", "hosts.local.yaml")
+    doc = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            doc = yaml.safe_load(f) or {}
+    entry = dict(doc.get("local") or {})
+    entry["enabled"] = bool(enabled)
+    doc["local"] = entry
+    return _write_hosts(doc)
+
+
 def save_host(name, entry):
     """Add/replace one machine in the untracked hosts.local.yaml."""
     path = os.path.join(BASE, "config", "hosts.local.yaml")
@@ -72,19 +108,21 @@ def save_host(name, entry):
         with open(path) as f:
             doc = yaml.safe_load(f) or {}
     doc[name] = entry
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        yaml.safe_dump(doc, f, sort_keys=False)
-    return path
+    return _write_hosts(doc)
 
 
-def save_all_hosts(entries):
-    """Replace the untracked hosts.local.yaml wholesale (settings page)."""
-    path = os.path.join(BASE, "config", "hosts.local.yaml")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        yaml.safe_dump(entries or {}, f, sort_keys=False)
-    return path
+def save_all_hosts(entries, local_enabled=None):
+    """Replace the untracked hosts.local.yaml wholesale (settings page).
+    The reserved 'local' entry (this-device flag) is preserved/carried
+    separately from the machine entries."""
+    doc = dict(entries or {})
+    if local_enabled is None:
+        existing = _load_file("hosts.local.yaml") or {}
+        if "local" in existing:
+            doc["local"] = existing["local"]
+    else:
+        doc["local"] = {"enabled": bool(local_enabled)}
+    return _write_hosts(doc)
 
 
 def _proxy_command(port_override=None):

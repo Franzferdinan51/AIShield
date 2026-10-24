@@ -71,8 +71,11 @@ __SAVED__
 <input id="endpoint" name="endpoint" value="__ENDPOINT__">
 </div></div>
 <h2>Machines to scan</h2>
-<p class="hint"><b>local</b> (this machine) is always a target. Add other
-machines here; the shield reaches them over ssh with your key.</p>
+<label><input type="checkbox" name="local_enabled" __LOCAL_CHECKED__ style="width:auto">
+<b>This device</b> — scan the machine the shield itself runs on (recommended)</label>
+<p class="hint">The shield is designed to run on each machine itself.
+Remote machines are scanned only when you check their
+<b>scan enabled</b> box — they're off by default.</p>
 <div id="hosts">__HOST_ROWS__</div>
 <button type="button" class="secondary" onclick="addHost()">+ add machine</button>
 <p style="margin-top:1.6rem"><button type="submit">Save settings</button></p>
@@ -91,6 +94,10 @@ function hostRow(h){
   <div><label>User</label><input name="h_user" value="${h.user||''}"></div>
   <div><label>Port</label><input name="h_port" value="${h.port||22}"></div>
   <div><label>Proxy</label><input name="h_proxy" value="${h.proxy||''}" placeholder="none / env / env:3130"></div></div>
+ <div><label>Scan enabled</label>
+ <input type="hidden" name="h_enabled" value="${h.enabled?1:0}">
+ <input type="checkbox" ${h.enabled?'checked':''} style="width:auto"
+   onchange="this.previousElementSibling.value=this.checked?1:0"></div>
  <p><button type="button" class="secondary" onclick="this.closest('.host').remove()">remove</button></p>`;
  return d;}
 function addHost(){document.getElementById('hosts').appendChild(hostRow({}));}
@@ -132,6 +139,7 @@ def render(saved=False):
             ("__DECISION_FALLBACK__", _esc(roles["decision"].get("fallback"))),
             ("__ENDPOINT__", _esc(roles["decision"].get("endpoint") or "/v1/systemone")),
             ("__MODEL_OPTIONS__", "".join(f'<option value="{_esc(m)}">' for m in models)),
+            ("__LOCAL_CHECKED__", "checked" if transport.local_enabled() else ""),
             ("__HOST_ROWS__", rows)):
         page = page.replace(token, value)
     return page
@@ -176,9 +184,11 @@ def _save(form):
             entry["port"] = 22
         if col("h_proxy"):
             entry["proxy"] = col("h_proxy")
+        entry["enabled"] = col("h_enabled") == "1"
         if entry["host"] and entry["user"]:
             entries[name] = entry
-    transport.save_all_hosts(entries)
+    transport.save_all_hosts(entries,
+                             local_enabled=("local_enabled" in form))
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -133,7 +133,9 @@ def cmd_settings(args):
 
 def cmd_hosts(args):
     print(json.dumps(transport.describe(), indent=1))
-    print("plus 'local' — this machine, kind:", inventory.local_kind())
+    print("'local' (this machine): enabled =", transport.local_enabled(),
+          "| kind:", inventory.local_kind())
+    print("remote machines scan only when their entry has enabled: true")
     print("config: config/hosts.yaml + config/hosts.local.yaml (untracked)")
 
 
@@ -215,7 +217,8 @@ def cmd_setup(args):
             name, osname, ssh = spec.split(":", 2)
             user, host, port = _parse_ssh_target(ssh)
             transport.save_host(name, {"os": osname, "host": host,
-                                       "user": user, "port": port})
+                                       "user": user, "port": port,
+                                       "enabled": True})
             print(f"host saved: {name} ({osname}, {user}@{host}:{port})")
         except Exception as e:
             print(f"could not parse --add-host '{spec}': {e}")
@@ -282,7 +285,11 @@ def cmd_setup(args):
             dec = _ask("decision model id (blank = use main model)",
                        cfg["roles"]["decision"]["model"] or "")
             cfg["roles"]["decision"]["model"] = dec or None
-        print("\nMachines to scan: 'local' (this one) is always included.")
+        print("\nMachines to scan. The shield is designed to run on each")
+        print("machine itself — remote scanning is optional and off unless")
+        print("you enable it per machine.")
+        here = _ask("scan THIS device? (y/n)", "y")
+        transport.save_local_enabled(here.lower().startswith("y"))
         while True:
             name = _ask("add a machine? its short name (blank to finish)")
             if not name:
@@ -295,9 +302,12 @@ def cmd_setup(args):
             if not host or not user:
                 print("  need user@host — skipped")
                 continue
-            path = transport.save_host(name, {"os": osname, "host": host,
-                                              "user": user, "port": port})
-            print(f"  saved {name} -> {user}@{host}:{port} ({osname}) in {path}")
+            en = _ask(f"enable scanning for '{name}'? (y/n)", "n")
+            path = transport.save_host(
+                name, {"os": osname, "host": host, "user": user,
+                       "port": port, "enabled": en.lower().startswith("y")})
+            print(f"  saved {name} -> {user}@{host}:{port} ({osname}, "
+                  f"{'enabled' if en.lower().startswith('y') else 'disabled'}) in {path}")
     path = cfgmod.save(cfg)
     print(f"\nmodel config saved: {path}")
     print(json.dumps(cfg, indent=1))

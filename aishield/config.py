@@ -65,6 +65,8 @@ def save(cfg):
     control. config.load() layers it above models.yaml."""
     import yaml
     os.makedirs(os.path.dirname(MODELS_LOCAL_YAML), exist_ok=True)
-    with open(MODELS_LOCAL_YAML, "w") as f:
+    tmp = MODELS_LOCAL_YAML + ".tmp"
+    with open(tmp, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
+    os.replace(tmp, MODELS_LOCAL_YAML)  # atomic: never a half-written config
     return MODELS_LOCAL_YAML

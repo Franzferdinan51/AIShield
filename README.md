@@ -76,9 +76,13 @@ value has an env override (`AISHIELD_LM_URL`, `AISHIELD_API_KEY`,
   container runtimes — extensible per target via `lifeline_extra`) hold
   critical packages before the AI is even asked, and a held step is
   never auto-applied.
-- **Targets are yours.** The program ships with no built-in machines.
-  Collectors are per-OS (Linux, macOS, Windows) and run locally or over
-  the program's own ssh transport.
+- **Targets are yours — and local by default.** The program ships with
+  no built-in machines. A **this device** checkbox (wizard + settings
+  page) controls scanning the machine the shield runs on, and remote
+  machines are opt-in per machine: the shield is designed to run on
+  each machine itself, not to sweep remotes. Collectors are per-OS
+  (Linux, macOS, Windows) and run locally or over the program's own
+  ssh transport.
 
 ## Quick start
 
@@ -142,6 +146,9 @@ Register it with any MCP client as a stdio server with command
 
 ## Changelog
 
+- **0.6.1** — scan-target checkboxes: 'this device' toggle plus a
+  per-machine enable flag (remote scanning is opt-in, off by default)
+  in the wizard and the settings page; config saves are atomic.
 - **0.6.0** — works for anyone: no built-in fleet, no baked-in models.
   Targets are user-defined machines (name + OS) in local config;
   collectors dispatch by OS. The setup wizard covers providers
