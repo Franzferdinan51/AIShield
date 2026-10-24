@@ -1,0 +1,14 @@
+# Swarm tab config — copy to swarm.local.yaml and edit.
+# friendly: substrings matched against process command lines; matches
+# are classified as YOUR agents and listed separately from suspects.
+friendly:
+  - hermes
+  - aishield
+  - lm studio
+  - lmstudio
+  - systemone
+  - duckbot
+  - grok-local
+# blocklist: domains or IPs. Any process with an established
+# connection to one is classified HOSTILE in the census.
+blocklist: []
