@@ -1,0 +1,5 @@
+# AI Shield Netwatch — your blocklist lives in netwatch.local.yaml
+# (this file is only a template; the shield writes the .local.yaml).
+# The GUI/CLI/MCP add to it when you block a source. Firewall rules
+# are generated from it into data/netwatch-apply.sh (or .ps1).
+blocked: []
