@@ -237,6 +237,11 @@ Register it with any MCP client as a stdio server with command
 
 ## Changelog
 
+- **0.8.3** — patch-run hardening: a command timeout or transport
+  failure is now a recorded failed step, never a silent run-killer
+  (a 600 s `apt-get update` on a slow mirror once ended a run with
+  no steps, log or report); the apt metadata refresh gets 1800 s
+  and its failure surfaces in `env_warnings`.
 - **0.8.2** — wizard consistency: the server-unreachable (manual
   entry) path now asks for the decision fallback and protocol too,
   not just the connected path.

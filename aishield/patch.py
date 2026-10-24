@@ -152,8 +152,12 @@ def _exec(target, command, timeout=600):
     from . import transport
     try:
         out, err, rc = transport.run(target, command, timeout=timeout)
-    except RuntimeError as e:
-        return 127, "", str(e)[:1000]
+    except Exception as e:
+        # A timeout or transport failure is a FAILED STEP with the
+        # reason recorded — never an exception that kills the whole
+        # run silently (v0.8.2's apt update hit the 600 s cap on a
+        # slow mirror and the run died with no steps, log or report).
+        return 127, "", f"{type(e).__name__}: {e}"[:1000]
     return rc, (out or "")[-2000:], (err or "")[-1000:]
 
 
@@ -165,8 +169,13 @@ def apply_plan(plan, confirm):
     # machine's package lists may be empty — "Unable to locate package")
     apt_targets = sorted({s["target"] for s in plan
                           if s.get("auto") and s.get("manager") == "apt"})
+    update_warnings = []
     for t in apt_targets:
-        _exec(t, "sudo apt-get update -qq")
+        rc, out, err = _exec(t, "sudo apt-get update -qq", timeout=1800)
+        if rc != 0:
+            update_warnings.append(
+                {"target": t, "apt_update_failed":
+                 (out + err)[-400:] or f"rc={rc}"})
     results = []
     for step in plan:
         if not step.get("auto") or not step.get("command"):
@@ -199,4 +208,5 @@ def apply_plan(plan, confirm):
         if rc != 0 and text:
             warnings.append({"target": target, "python": py,
                              "pip_check": text[:600]})
-    return {"applied": results, "env_warnings": warnings}
+    return {"applied": results,
+            "env_warnings": update_warnings + warnings}
