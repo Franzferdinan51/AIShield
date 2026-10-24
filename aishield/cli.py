@@ -9,6 +9,7 @@ Targets: vm (this machine), mac, batman, grievous, all
 """
 import argparse
 import json
+import os
 import sys
 
 from . import ai, config as cfgmod, cvenow, engine, feeds, inventory, match, patch
@@ -71,6 +72,10 @@ def cmd_patch(args):
     still = [f for f in after["findings"] if f["confidence"] != "error"]
     print(f"\npost-patch rescan: {len(still)} findings remain "
           f"(was {len(result['findings'])})")
+    from . import report as _report
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pdf = _report.write_run_report(base, args.target, result, outcome, after)
+    print(f"report: {pdf}")
 
 
 def cmd_cve(args):

@@ -3,3 +3,5 @@ data/osv-cache/
 data/patch-log.jsonl
 __pycache__/
 *.pyc
+
+data/reports/

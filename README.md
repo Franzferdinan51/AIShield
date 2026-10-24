@@ -129,3 +129,7 @@ command `python3 -m aishield.mcp_server` and cwd set to this repo.
   it (a bare `python3` at patch time could resolve to a different
   environment — e.g. an agent's pinned venv — than the one scanned).
   `apply` also runs `pip check` afterwards and reports pin conflicts.
+- **0.4.3** — every `patch --apply` run now writes a PDF summary report
+  (scan before, applied/held/manual steps, pip-check result, post-patch
+  rescan) to `data/reports/`, rendered by a small dependency-free PDF
+  writer (`aishield/report.py`).
