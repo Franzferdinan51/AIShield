@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 
 data/reports/
+config/hosts.local.yaml

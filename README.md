@@ -133,3 +133,10 @@ command `python3 -m aishield.mcp_server` and cwd set to this repo.
   (scan before, applied/held/manual steps, pip-check result, post-patch
   rescan) to `data/reports/`, rendered by a small dependency-free PDF
   writer (`aishield/report.py`).
+- **0.5.0** — one self-contained program: the shield reaches its targets
+  itself through a built-in transport (`aishield/transport.py`) driven
+  by its own host config (`config/hosts.yaml` + untracked
+  `config/hosts.local.yaml`) — the fleet ssh wrapper scripts are gone
+  from every code path. Self-targets run locally; remote targets use
+  the OS ssh with the program's own options (optional HTTP-proxy route
+  from the environment for sandboxed runners).

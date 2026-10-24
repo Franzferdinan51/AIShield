@@ -12,7 +12,7 @@ import json
 import os
 import sys
 
-from . import ai, config as cfgmod, cvenow, engine, feeds, inventory, match, patch
+from . import ai, config as cfgmod, cvenow, engine, feeds, inventory, match, patch, transport
 
 
 def cmd_latest(args):
@@ -123,6 +123,12 @@ def cmd_status(args):
     except Exception as e:
         print(f"CVE Now: unreachable ({str(e)[:120]})")
     print(f"targets: {', '.join(inventory.TARGETS)}")
+
+
+def cmd_hosts(args):
+    print(json.dumps(transport.describe(), indent=1))
+    print("this host:", transport.this_host() or "(not a fleet target)")
+    print("config: config/hosts.yaml + config/hosts.local.yaml (untracked)")
 
 
 def cmd_models(args):
@@ -276,6 +282,8 @@ def main(argv=None):
     p.set_defaults(fn=cmd_status)
     p = sub.add_parser("models")
     p.set_defaults(fn=cmd_models)
+    p = sub.add_parser("hosts")
+    p.set_defaults(fn=cmd_hosts)
     p = sub.add_parser("setup")
     p.add_argument("--server", default=None, help="model server base URL")
     p.add_argument("--triage", default=None, help="triage model id ('' = auto)")

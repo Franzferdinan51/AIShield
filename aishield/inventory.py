@@ -9,20 +9,11 @@ import os
 import platform
 import subprocess
 
-SSH = {"mac": ["~/bin/mac-ssh"], "batman": ["~/bin/batman-ssh"], "grievous": ["~/bin/grievous-ssh"]}
+from . import transport
 
-
-def this_host():
-    """Which fleet target THIS machine is, when the shield runs on one of
-    them: the Mac runs macOS, the sandbox VM runs Linux. A target that is
-    this host must be collected locally — the ssh wrappers point AWAY
-    from here and don't exist on the host itself."""
-    system = platform.system()
-    if system == "Darwin":
-        return "mac"
-    if system == "Linux":
-        return "vm"
-    return None
+# Re-exported for callers that learned it here; the transport module owns
+# host identity now — the program reaches its targets itself.
+this_host = transport.this_host
 
 
 def _run(cmd, timeout=180):
@@ -32,24 +23,12 @@ def _run(cmd, timeout=180):
 
 
 def _remote(target, command, timeout=300):
-    """Run a collector script on a target. Self-targets run locally;
-    remote targets go through the fleet ssh wrappers (script passed as
-    ONE argv element, real newlines preserved through ssh)."""
-    if target == this_host():
-        out, err, rc = _run(command, timeout=timeout)
-        if rc != 0:
-            raise RuntimeError(f"{target} collector failed: {(err or '').strip()[:300]}")
-        return out
-    wrapper = os.path.expanduser(SSH[target][0])
-    if not os.path.exists(wrapper):
-        raise RuntimeError(
-            f"collecting '{target}' needs {SSH[target][0]}, which doesn't exist "
-            f"on this machine ({platform.system()}) — run aishield from the VM "
-            "or the Mac, where the fleet wrappers live")
-    p = subprocess.run([wrapper, command], capture_output=True, text=True, timeout=timeout)
-    if p.returncode != 0:
-        raise RuntimeError(f"{target} collector failed: {(p.stderr or '').strip()[:300]}")
-    return p.stdout
+    """Run a collector script on a target through the program's own
+    transport (local for self-targets, its built-in ssh otherwise)."""
+    out, err, rc = transport.run(target, command, timeout=timeout)
+    if rc != 0:
+        raise RuntimeError(f"{target} collector failed: {(err or '').strip()[:300]}")
+    return out
 
 
 # ------------------------------------------------------------------ local linux
