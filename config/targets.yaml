@@ -1,0 +1,11 @@
+# AI Shield per-target options.
+# pip_break_system_packages: ONLY for disposable/sandbox pythons (PEP 668).
+# Never enable on the Mac (Homebrew python) or a machine you care about.
+vm:
+  pip_break_system_packages: true
+mac:
+  pip_break_system_packages: false
+batman:
+  pip_break_system_packages: false
+grievous:
+  pip_break_system_packages: false

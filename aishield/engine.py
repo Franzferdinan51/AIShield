@@ -1,0 +1,91 @@
+"""Scan orchestration shared by the CLI and the MCP server."""
+import time
+
+from . import ai, feeds, inventory, match, patch
+
+
+def _dedupe(findings):
+    """Merge duplicate records for the same package+CVE (OSV returns GHSA and
+    PYSEC records that alias to one CVE). Unions sources/fixes, keeps max CVSS."""
+    merged = {}
+    for f in findings:
+        key = (f["target"], f["name"].lower(), f["manager"],
+               tuple(f["cve_ids"]) if f["cve_ids"] else (f["vuln_id"],))
+        if key not in merged:
+            merged[key] = {**f, "vuln_ids": [f["vuln_id"]]}
+            continue
+        m = merged[key]
+        m["vuln_ids"].append(f["vuln_id"])
+        m["sources"] = sorted(set(m["sources"]) | set(f["sources"]))
+        m["fixed_versions"] = sorted(set(m["fixed_versions"]) | set(f["fixed_versions"]))
+        try:
+            if float(str(f["cvss"]).split(":")[-1].split()[0]) > float(str(m["cvss"]).split(":")[-1].split()[0]):
+                m["cvss"] = f["cvss"]
+        except Exception:
+            pass
+        if len(f["summary"]) > len(m["summary"]):
+            m["summary"] = f["summary"]
+    return list(merged.values())
+
+
+def run_scan(target, program=None, use_ai=False, adjudicate_apps=False):
+    started = time.time()
+    items = inventory.collect(target)
+    if program:
+        items = [it for it in items if program.lower() in it["name"].lower()]
+    kev_map, kev_date = feeds.kev()
+    findings = match.scan_packages(items, kev_map)
+    findings += match.scan_apps(items, kev_map)
+    if adjudicate_apps and ai.pick_model():
+        kept = []
+        for f in findings:
+            if f["confidence"].startswith("name-match"):
+                verdict = ai.adjudicate(f["name"], f["version"], f["kev"])
+                f["ai_verdict"] = verdict
+                if verdict == "no":
+                    continue
+                if verdict == "yes":
+                    f["confidence"] = "name-match, AI-confirmed product"
+            kept.append(f)
+        findings = kept
+    findings = match.rank(_dedupe(findings))
+    result = {
+        "target": target, "scanned_at": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "inventory_count": len(items), "program_filter": program,
+        "kev_catalog_date": kev_date,
+        "findings": findings, "plan": patch.build_plan(findings),
+        "elapsed_s": round(time.time() - started, 1),
+    }
+    if use_ai:
+        model = ai.pick_model()
+        result["ai_model"] = model
+        if model:
+            result["ai_brief"] = ai.triage(findings, target, model=model)
+    return result
+
+
+def format_report(result):
+    lines = [f"AI SHIELD — {result['target']} — {result['scanned_at']}",
+             f"inventory: {result['inventory_count']} items | "
+             f"findings: {len(result['findings'])} | KEV catalog: {result['kev_catalog_date']}"]
+    if not result["findings"]:
+        lines.append("clean — nothing matched known-vulnerable ranges or KEV products.")
+    for f in result["findings"]:
+        kev_tag = " [KNOWN-EXPLOITED]" if f["known_exploited"] else ""
+        fix = f" -> fixed in {', '.join(f['fixed_versions'])}" if f.get("fixed_versions") else ""
+        lines.append(f"- {f['name']} {f['version']} ({f['ecosystem']}/{f['manager']}) "
+                     f"{','.join(f['cve_ids']) or f['vuln_id']}{kev_tag}: "
+                     f"{f['summary'][:110]}{fix} [{f['confidence']}; via {','.join(f['sources'])}]")
+    auto = [p for p in result["plan"] if p["auto"]]
+    manual = [p for p in result["plan"] if not p["auto"]]
+    if auto:
+        lines.append("patch plan (auto):")
+        for p in auto:
+            lines.append(f"  $ {p['command']}   # {p['name']} {p['version']}")
+    if manual:
+        lines.append("patch plan (manual):")
+        for p in manual:
+            lines.append(f"  {p['name']}: {p['note']}")
+    if result.get("ai_brief"):
+        lines.append(f"\nAI brief ({result.get('ai_model')}):\n{result['ai_brief']}")
+    return "\n".join(lines)

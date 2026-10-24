@@ -1,0 +1,5 @@
+data/kev.json
+data/osv-cache/
+data/patch-log.jsonl
+__pycache__/
+*.pyc
