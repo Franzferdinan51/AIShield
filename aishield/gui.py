@@ -735,6 +735,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(port=8770, open_browser=True):
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        from . import netwatch as _nw
+        _nw.start_canaries()
+    except Exception:
+        pass
     threading.Thread(target=lambda: api_netwatch(24, "local"),
                      daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
@@ -985,7 +990,9 @@ async function loadStatus(){
  $('#dash-kev').innerHTML=(STATUS.kev_recent||[]).length?'<table><tr><th>CVE</th><th>Product</th><th>Added</th></tr>'+STATUS.kev_recent.map(e=>`<tr class="clickable" onclick="lookupCve('${esc(e.id)}')"><td>${esc(e.id)}</td><td>${esc((e.vendor||'')+' '+(e.product||''))}</td><td class="dim">${esc(e.added||'')}</td></tr>`).join('')+'</table>':'<p class="dim">KEV catalog not loaded</p>';
  $('#dash-reports').innerHTML=(STATUS.reports||[]).length?STATUS.reports.map(r=>`<div class="kv"><span>📄 ${esc(r.name)}</span><b>${r.interactive?'<a href="#" onclick="go(\'reports\');return false">read in app</a> · ':''}<a href="/api/report/${esc(r.name)}" target="_blank">PDF</a> · ${esc(r.mtime)}</b></div>`).join(''):'<p class="dim">no reports yet — patch runs write one here</p>';
  const opts=STATUS.targets.map(t=>`<option>${esc(t)}</option>`).join('');
+ const _keep={}; for(const _id of ['scan-target','patch-target','nw-target']){const _e=document.getElementById(_id); if(_e&&_e.value)_keep[_id]=_e.value;}
  $('#scan-target').innerHTML=opts; $('#patch-target').innerHTML=opts; const _nwt=$('#nw-target'); if(_nwt)_nwt.innerHTML=opts;
+ for(const _id of ['scan-target','patch-target','nw-target']){const _e=document.getElementById(_id); if(_e&&_keep[_id]&&STATUS.targets.includes(_keep[_id]))_e.value=_keep[_id];}
 }
 function lookupCve(id){go('cve');$('#cve-id').value=id;$('#cve-go').click();}
 let LASTSCAN=null;
@@ -1007,6 +1014,8 @@ function renderScan(){
  $('#scan-out').innerHTML=(r.warnings&&r.warnings.length?`<p class="spin">⚠ ${r.warnings.map(esc).join('<br>')}</p>`:'')+(r.cleared&&r.cleared.length?`<p class="ok">✓ cleared by version check (installed is outside the CVE's affected range): ${r.cleared.map(c=>esc(c.name)+' '+esc(c.version)+' · '+esc(c.cve)).join(' &nbsp; ')}</p>`:'')+(r.changes&&r.changes.since?`<p class=\"dim\">since last scan (${esc(r.changes.since)}): <b>${(r.changes.new||[]).length} new</b>, <b>${(r.changes.resolved||[]).length} resolved</b>${(r.changes.resolved||[]).length?' — resolved: '+r.changes.resolved.map(f=>esc(f.name)).join(', '):''}</p>`:'')+`<table><tr><th>Package</th><th>CVEs</th><th>Severity</th><th>Fixed in</th><th>Confidence</th><th></th></tr>${rows||'<tr><td colspan=6 class="ok">no findings match</td></tr>'}</table><div id="explain-box"></div>`+(r.ai_brief?`<h2>AI brief (${esc(r.ai_model||'')})</h2><pre>${esc(r.ai_brief)}</pre>`:'');
 }
 $('#scan-filter').addEventListener('input',renderScan);
+$('#patch-target').addEventListener('change',()=>{loadPlan();});
+$('#scan-target').addEventListener('change',()=>{LASTSCAN=null;$('#scan-out').innerHTML='';$('#scan-filter-row').style.display='none';$('#scan-state').textContent='target changed — press Scan';});
 $('#scan-kev').addEventListener('change',renderScan);
 async function approveAct(btn,action){
  const d=btn.dataset;

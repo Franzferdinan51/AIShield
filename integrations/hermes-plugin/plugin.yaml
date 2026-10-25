@@ -1,5 +1,5 @@
 name: aishield
-version: 0.16.0
+version: 0.17.2
 description: >-
   AI Shield: CVE scanning and gated patching for this machine and the
   machines it manages. Deterministic matching against OSV, CVE Now and

@@ -2,7 +2,7 @@
 import os
 import time
 
-from . import ai, feeds, inventory, match, patch
+from . import ai, disclosures, feeds, inventory, match, patch
 
 
 def _dedupe(findings):
@@ -38,14 +38,31 @@ def run_scan(target, program=None, use_ai=False, adjudicate_apps=True):
     findings = match.scan_packages(items, kev_map)
     app_findings, cleared = match.scan_apps(items, kev_map)
     findings += app_findings
+    disc_advisories, disc_meta = disclosures.advisories()
+    disc_findings, disc_cleared = match.scan_disclosures(items, disc_advisories)
+    findings += disc_findings
+    cleared += disc_cleared
+    pwn_incidents, pwn_generated = feeds.pwnwatch()
+    match.pwnwatch_overlay(findings, pwn_incidents)
+    pwn_findings, pwn_cleared = match.scan_pwnwatch(items, pwn_incidents,
+                                                    findings)
+    findings += pwn_findings
+    cleared += pwn_cleared
     # Feed failures ride along as confidence="error" pseudo-findings; they
     # are warnings, not findings — keep them out of counts, plans, reports.
     warnings = [f["summary"] for f in findings if f.get("confidence") == "error"]
     findings = [f for f in findings if f.get("confidence") != "error"]
+    if disc_meta.get("stale"):
+        warnings.append("a disclosure source page changed since it was "
+                        "curated — re-check it for CVE assignments or "
+                        "vendor fixes (see result['disclosures'])")
+    if not pwn_incidents:
+        warnings.append("pwn.watch incident index unreachable and no "
+                        "cache — live-incident overlay skipped this scan")
     if adjudicate_apps:
         kept = []
         for f in findings:
-            if f["confidence"].startswith("name-match"):
+            if f["confidence"].startswith("name-match") and f.get("kev"):
                 verdict, detail = ai.adjudicate(f["name"], f["version"], f["kev"])
                 if detail.get("via") != "none":
                     f["ai_verdict"] = verdict
@@ -82,7 +99,11 @@ def run_scan(target, program=None, use_ai=False, adjudicate_apps=True):
     result = {
         "target": target, "scanned_at": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "inventory_count": len(items), "program_filter": program,
-        "kev_catalog_date": kev_date,
+        "kev_catalog_date": kev_date, "disclosures": disc_meta,
+        "pwnwatch": {"generated_at": pwn_generated,
+                     "incidents": len(pwn_incidents),
+                     "live": sum(1 for i in pwn_incidents
+                                 if i.get("status") == "live")},
         "findings": findings, "warnings": warnings, "cleared": cleared,
         "plan": patch.build_plan(findings, decide=True),
         "elapsed_s": round(time.time() - started, 1),

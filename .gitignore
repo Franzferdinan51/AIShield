@@ -8,3 +8,8 @@ data/reports/
 config/hosts.local.yaml
 config/models.local.yaml
 config/targets.local.yaml
+data/approvals.json
+data/cvenow-cache.json
+data/nvd-cache/
+data/swarm-incidents/
+data/swarm-log.jsonl
