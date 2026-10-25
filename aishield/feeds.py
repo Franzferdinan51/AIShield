@@ -106,6 +106,37 @@ def cvss_of(detail):
     return None
 
 
+# ---------------------------------------------------------------- pwn.watch
+PWNWATCH_URL = "https://pwn.watch/incidents.json"
+
+
+def pwnwatch(refresh=False):
+    """pwn.watch incident index: live security incidents with CVEs,
+    patch status and affected/fixed versions as published (plain static
+    JSON, no auth). Returns (incidents, generatedAt). Cached 6 h.
+    This is an overlay/candidate source, never a sole verdict source —
+    and it must never break a scan: on failure with no cache at all it
+    returns ([], None) and the caller notes the gap as a warning."""
+    path = os.path.join(DATA, "pwnwatch.json")
+    if refresh or not _fresh(path, 6):
+        try:
+            r = requests.get(PWNWATCH_URL, timeout=60,
+                             headers={"User-Agent": "aishield"})
+            r.raise_for_status()
+            os.makedirs(DATA, exist_ok=True)
+            with open(path, "w") as f:
+                f.write(r.text)
+        except Exception:
+            if not os.path.exists(path):
+                return [], None
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+        return doc.get("incidents", []), doc.get("generatedAt")
+    except Exception:
+        return [], None
+
+
 # ---------------------------------------------------------------- NVD
 def nvd_cve(cve_id):
     """CVE detail from NVD: description, CVSS base score, weaknesses. Best-effort."""

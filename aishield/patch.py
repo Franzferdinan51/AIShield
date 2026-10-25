@@ -46,9 +46,19 @@ def plan_for(finding):
     conf = str(finding.get("confidence", ""))
     confirmed = finding.get("ai_verdict") == "yes" or "confirmed" in conf
     if conf.startswith("name-match") and not confirmed:
+        if "pwn.watch" in (finding.get("sources") or []):
+            return {"auto": False, "command": None,
+                    "note": "unconfirmed product name-match (pwn.watch incident) — "
+                            "check the installed version against the incident's "
+                            "affected range before patching"}
         return {"auto": False, "command": None,
                 "note": "unconfirmed product name-match — verify it's the KEV product "
                         "before patching (scan with adjudication to auto-check)"}
+    if any(str(s).startswith("disclosure:") for s in finding.get("sources") or []):
+        return {"auto": False, "command": None,
+                "note": "no vendor fix published (undisclosed/unpatched advisory) — "
+                        "apply the advisory's mitigations; an upgrade is NOT a fix "
+                        "until the vendor ships one"}
     mgr, name = finding["manager"], finding["name"]
     fixed = (finding.get("fixed_versions") or [None])[0]
     if mgr == "apt":
