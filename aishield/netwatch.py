@@ -40,6 +40,8 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CFG_PATH = os.path.join(HERE, "config", "netwatch.local.yaml")
 DATA = os.path.join(HERE, "data")
 SAMPLES = os.path.join(DATA, "netwatch-samples.jsonl")
+PROBES = os.path.join(DATA, "netwatch-probes.jsonl")
+CANARY_HEARTBEAT = os.path.join(DATA, "netwatch-canary.json")
 GEOCACHE = os.path.join(DATA, "geo-cache.json")
 LOG = os.path.join(DATA, "netwatch-log.jsonl")
 
@@ -47,7 +49,22 @@ SERVICE_PORTS = {22: "SSH", 3389: "RDP", 445: "SMB", 139: "SMB",
                  5900: "VNC", 1234: "LM Studio", 11434: "Ollama",
                  8770: "AI Shield", 8766: "agent shim", 80: "HTTP",
                  443: "HTTPS", 8080: "HTTP", 8188: "ComfyUI",
-                 9000: "service", 32400: "Plex", 8081: "HTTP"}
+                 9000: "service", 32400: "Plex", 8081: "HTTP",
+                 # the owner's actually-exposed local services —
+                 # pressure on these is what "being attacked" means
+                 # on this fleet (added 0.17.5)
+                 3444: "node service", 8765: "Hermes tools",
+                 8799: "drama server", 8895: "Command Center",
+                 8899: "RAG visualizer", 8901: "service",
+                 8930: "Hermes Town", 8940: "Town Lives",
+                 9010: "BrowserOS", 9011: "BrowserOS",
+                 9119: "Hermes dashboard"}
+
+# Canary listeners: ports nothing legitimate uses. ANY connection is
+# a probe by definition — the sensor that sees scans the socket
+# tables can't (a SYN to a closed port leaves no socket behind).
+CANARY_PORTS = {2222: "SSH (canary)", 13389: "RDP (canary)",
+                5901: "VNC (canary)"}
 _TAILNET = ipaddress.ip_network("100.64.0.0/10")
 
 
@@ -346,6 +363,141 @@ def _sampled_events(hours):
     return events
 
 
+# ------------------------------------------------------------- probes
+def _probe_events(hours):
+    """Probe/scan evidence per source IP: {ip: {..., flagged}}.
+
+    Two signals the plain sensor misses:
+    - scan shape in the sampler history: one source touching many
+      distinct service ports, or piling up SYN_RECV half-opens;
+    - canary hits: a connection to a canary port is a probe by
+      definition (nothing legitimate uses those ports).
+    """
+    out = {}
+    cutoff = time.time() - hours * 3600
+
+    def slot(ip):
+        return out.setdefault(ip, {"ports": set(), "syn_recv": 0,
+                                   "canary_ports": set(),
+                                   "canary_hits": 0, "samples": 0})
+
+    if os.path.exists(SAMPLES):
+        try:
+            with open(SAMPLES) as f:
+                lines = f.readlines()[-4000:]
+        except Exception:
+            lines = []
+        for line in lines:
+            try:
+                rec = json.loads(line)
+                ts = time.mktime(time.strptime(
+                    rec["ts"], "%Y-%m-%d %H:%M:%S"))
+            except Exception:
+                continue
+            if ts < cutoff:
+                continue
+            for ip, ports in (rec.get("snap") or {}).items():
+                s = slot(ip)
+                s["samples"] += 1
+                for port, counts in (ports or {}).items():
+                    s["ports"].add(int(port))
+                    s["syn_recv"] += counts.get("syn_recv", 0)
+    if os.path.exists(PROBES):
+        try:
+            with open(PROBES) as f:
+                lines = f.readlines()[-4000:]
+        except Exception:
+            lines = []
+        for line in lines:
+            try:
+                rec = json.loads(line)
+                ts = time.mktime(time.strptime(
+                    rec["ts"], "%Y-%m-%d %H:%M:%S"))
+            except Exception:
+                continue
+            if ts < cutoff:
+                continue
+            s = slot(rec.get("ip", ""))
+            s["canary_ports"].add(int(rec.get("port", 0)))
+            s["canary_hits"] += 1
+    for ip, s in out.items():
+        s["ports"] = sorted(s["ports"])
+        s["canary_ports"] = sorted(s["canary_ports"])
+        kinds = []
+        if s["canary_hits"]:
+            kinds.append("canary")
+        if len(s["ports"]) >= 4 or s["syn_recv"] >= 10:
+            kinds.append("scan")
+        s["kinds"] = kinds
+        s["flagged"] = bool(kinds)
+    return out
+
+
+def start_canaries():
+    """Bind the canary listeners (called by the long-lived GUI
+    process). A hit appends to the probes file and is closed at
+    once — the canary never speaks. Returns the ports bound."""
+    import socket
+    import threading
+
+    bound = []
+
+    def serve(port):
+        try:
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("0.0.0.0", port))
+            srv.listen(16)
+        except Exception:
+            return
+        bound.append(port)
+        while True:
+            try:
+                conn, addr = srv.accept()
+            except Exception:
+                return
+            try:
+                os.makedirs(DATA, exist_ok=True)
+                with open(PROBES, "a") as f:
+                    f.write(json.dumps({
+                        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "ip": addr[0], "port": port}) + "\n")
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    for p in CANARY_PORTS:
+        threading.Thread(target=serve, args=(p,), daemon=True).start()
+
+    def heartbeat():
+        while True:
+            try:
+                os.makedirs(DATA, exist_ok=True)
+                with open(CANARY_HEARTBEAT, "w") as f:
+                    json.dump({"ts": time.strftime(
+                        "%Y-%m-%d %H:%M:%S"), "ports": bound}, f)
+            except Exception:
+                pass
+            time.sleep(60)
+
+    threading.Thread(target=heartbeat, daemon=True).start()
+    return bound
+
+
+def canary_status():
+    try:
+        with open(CANARY_HEARTBEAT) as f:
+            hb = json.load(f)
+        ts = time.mktime(time.strptime(hb["ts"], "%Y-%m-%d %H:%M:%S"))
+        return {"active": (time.time() - ts) < 180,
+                "ports": hb.get("ports") or []}
+    except Exception:
+        return {"active": False, "ports": []}
+
+
 # ---------------------------------------------------------------- geo
 def geo(ip):
     cls = ip_class(ip)
@@ -592,6 +744,7 @@ def census(hours=24, with_geo=True, target="local"):
         logs, note = _log_attackers(hours)
         sampled = _sampled_events(hours)
         live = live_snapshot()
+        probes = _probe_events(hours)
         blocked = set(_load_blocked())
     else:
         from . import inventory as _inv
@@ -611,10 +764,12 @@ def census(hours=24, with_geo=True, target="local"):
                 target, "netstat -an -p tcp", timeout=60)
             live = _live_from_text(raw, "Darwin")
         blocked = set()
+        probes = {}
         note = ((note + " · " if note else "") +
                 "remote watch: auth logs + live connections only — "
                 "no sampler runs on that machine")
-    ips = set(logs) | set(sampled) | set(live)
+    ips = set(logs) | set(sampled) | set(live) | {
+        ip for ip, p in probes.items() if p.get("flagged")}
     attackers, known = [], []
     for ip in ips:
         cls = ip_class(ip)
@@ -632,8 +787,19 @@ def census(hours=24, with_geo=True, target="local"):
             "sources": [s for s, on in
                         (("auth log", ip in logs),
                          ("sampler", ip in sampled),
-                         ("live connections", ip in live)) if on],
+                         ("live connections", ip in live),
+                         ("canary", bool((probes.get(ip) or {})
+                                         .get("canary_hits"))),
+                         ("probe sensor", bool((probes.get(ip) or {})
+                                               .get("flagged")))) if on],
         }
+        pr = probes.get(ip) or {}
+        if pr.get("flagged"):
+            entry["probe"] = {"kinds": pr["kinds"],
+                              "ports": pr["ports"],
+                              "syn_recv": pr["syn_recv"],
+                              "canary_ports": pr["canary_ports"],
+                              "canary_hits": pr["canary_hits"]}
         live_services = set()
         for port, counts in (live.get(ip) or {}).items():
             live_services.add(SERVICE_PORTS.get(int(port), str(port)))
@@ -644,11 +810,18 @@ def census(hours=24, with_geo=True, target="local"):
         score = entry["attempts"] + entry["sampled_events"]
         if entry.get("live_connected") and cls == "public":
             score += 30
+        if pr.get("flagged"):
+            score += 40 if "canary" in pr["kinds"] else 25
         entry["risk"] = score
         entry["level"] = ("high" if score >= 100 or
                           (cls == "public" and entry.get("live_connected")
                            and entry["attempts"] >= 5)
                           else "medium" if score >= 10 else "low")
+        if pr.get("flagged") and cls == "public":
+            if "canary" in pr["kinds"]:
+                entry["level"] = "high"
+            elif entry["level"] == "low":
+                entry["level"] = "medium"
         entry["geo"] = geo(ip) if with_geo else {"class": cls}
         (attackers if cls == "public" else known).append(entry)
     attackers.sort(key=lambda e: -e["risk"])
@@ -661,7 +834,15 @@ def census(hours=24, with_geo=True, target="local"):
                        "blocked": sum(1 for a in attackers
                                       if a["blocked"]),
                        "connected_now": sum(1 for a in attackers
-                                            if a.get("live_connected"))},
+                                            if a.get("live_connected")),
+                       "probing_sources": sum(
+                           1 for p in probes.values()
+                           if p.get("flagged")),
+                       "canary_hits": sum(
+                           p.get("canary_hits", 0)
+                           for p in probes.values())},
+            "canary": (canary_status() if target == "local"
+                       else {"active": False, "ports": []}),
             "attackers": attackers, "known_sources": known,
             "blocked_list": sorted(blocked)}
 
@@ -682,7 +863,8 @@ def assess(data=None):
                     f"{', '.join(a['services']) or '—'}, "
                     f"risk {a['level']}, "
                     f"{'BLOCKED already' if a['blocked'] else 'not blocked'}"
-                    f"{', connected right now' if a.get('live_connected') else ''}")
+                    f"{', connected right now' if a.get('live_connected') else ''}"
+                    f"{', PROBE ' + '/'.join(a['probe']['kinds']) + ' across ports ' + ','.join(map(str, a['probe']['ports'] + a['probe']['canary_ports'])) if a.get('probe') else ''}")
     prompt = (
         "You are the AI layer of AI Shield's Netwatch, writing for the "
         "machine's owner. Below are the public sources tracked "

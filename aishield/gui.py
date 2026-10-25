@@ -735,6 +735,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(port=8770, open_browser=True):
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        from . import netwatch as _nw
+        _nw.start_canaries()
+    except Exception:
+        pass
     threading.Thread(target=lambda: api_netwatch(24, "local"),
                      daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
