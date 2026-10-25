@@ -1,7 +1,10 @@
 # Runtime data — the owner's confidential security data (scans, reports,
 # caches, patch logs, approvals). Everything under data/ is created at
-# runtime; nothing there belongs in version control.
-data/
+# runtime; nothing there belongs in version control — except the
+# Tailworm change-detection baseline (a page hash + timestamps, no
+# private data), which fresh clones need for the feature to work.
+data/*
+!data/tailworm-baseline.json
 # Machine-local config: API keys, private hosts, automation policy,
 # swarm/netwatch allowlists. Templates live in config/*.example.yaml.
 config/*.local.yaml

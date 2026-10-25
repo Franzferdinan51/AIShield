@@ -317,13 +317,15 @@ Register it with any MCP client as a stdio server with command
   masked everywhere agents can see them; owner-specific netwatch
   ports and swarm names moved out of shipped source into untracked
   local config; six runnable test suites, all green, MCP E2E 9/9.
-- **0.17.3–0.17.5 (dev)** — new sources + netwatch sensors: pwn.watch
-  live-incident overlay on proven findings plus name-match
-  candidates with same-major-line clearance; curated disclosure
-  advisories for vulnerabilities with no CVE and no fix
-  (version-exact matches only, never a patch offer); netwatch
-  probe sensors — scan-shape detection over sampler history,
-  canary listeners, widened service ports — with tests.
+- **0.17.5 (dev)** — netwatch probe sensors: scan-shape detection
+  over sampler history, canary listeners in the GUI process,
+  widened service ports; the census merges probe evidence. Tests.
+- **0.17.3–0.17.4 (dev)** — new sources: pwn.watch live-incident
+  overlay on proven findings plus name-match candidates with
+  same-major-line clearance; curated disclosure advisories for
+  vulnerabilities with no CVE and no fix (version-exact matches
+  only, never a patch offer). Runtime data caches untracked; the
+  Tailworm baseline ships with the repo.
 - **0.17.2 (dev)** — GUI target pickers keep their selection across
   refreshes; changing the patch target reloads the plan, changing
   the scan target resets the scan state.
