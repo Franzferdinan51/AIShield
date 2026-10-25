@@ -1,10 +1,5 @@
-"""AI Shield CLI.
+"""AI Shield CLI — every command the shield offers (see USAGE below).
 
-  aishield latest [--source kev|critical|all] [--ecosystem pypi] [--limit 20]
-  aishield scan <target> [--program NAME] [--ai] [--adjudicate] [--json]
-  aishield patch <target> [--program NAME] [--apply] [--json]
-  aishield cve <CVE-ID>
-  aishield status
 Targets: 'local' (this machine) plus any machines defined in
 config/hosts.local.yaml — see `aishield hosts`. 'all' scans every target.
 """
@@ -17,24 +12,20 @@ from . import ai, config as cfgmod, cvenow, engine, feeds, inventory, match, pat
 
 
 def cmd_latest(args):
-    if args.source == "kev":
-        feed = cvenow.list_feed(name="kev", limit=args.limit)
-    elif args.source == "critical":
-        feed = cvenow.list_feed(filter=["critical"], ecosystem=args.ecosystem, limit=args.limit)
-    else:
-        feed = cvenow.list_feed(name="all", ecosystem=args.ecosystem, limit=args.limit)
-    items = feed.get("items") or feed.get("entries") or feed.get("vulnerabilities") or []
+    feed = engine.latest(source=args.source, ecosystem=args.ecosystem,
+                         limit=args.limit)
     if args.json:
         print(json.dumps(feed, indent=1))
         return
-    for it in items:
-        if isinstance(it, dict):
-            cid = it.get("id") or it.get("cve_id") or it.get("cveID") or "?"
-            summ = (it.get("summary") or it.get("title") or "")[:100]
-            sev = it.get("severity") or it.get("cvss") or ""
-            print(f"{cid}  {sev}  {summ}")
-    if not items:
-        print(json.dumps(feed)[:800])
+    if feed.get("warning"):
+        print(f"warning: {feed['warning']}", file=sys.stderr)
+    for it in feed["items"]:
+        cid = it.get("id") or "?"
+        summ = (it.get("summary") or "")[:100]
+        sev = it.get("severity") or ""
+        print(f"{cid}  {sev}  {summ}")
+    if not feed["items"]:
+        print("(no entries)")
 
 
 def cmd_scan(args):
@@ -44,8 +35,9 @@ def cmd_scan(args):
         try:
             result = engine.run_scan(t, program=args.program, use_ai=args.ai,
                                      adjudicate_apps=args.adjudicate)
-        except RuntimeError as e:
-            print(f"error: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"error: {type(e).__name__}: {e}"[:300],
+                  file=sys.stderr)
             failed = True
             continue
         if args.json:
@@ -60,14 +52,21 @@ def cmd_scan(args):
 def cmd_patch(args):
     try:
         result = engine.run_scan(args.target, program=args.program)
-    except RuntimeError as e:
-        print(f"error: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"error: {type(e).__name__}: {e}"[:300], file=sys.stderr)
         sys.exit(2)
     if not args.apply:
         print(engine.format_report(result))
         print("\n(dry run — re-run with --apply to execute the auto patch plan)")
         return
-    outcome = patch.apply_plan(result["plan"], confirm="PATCH")
+    plan = result["plan"]
+    if getattr(args, "policy", False):
+        from . import policy as policymod
+        pol = policymod.load()
+        plan, withheld = policymod.filter_plan(plan, pol)
+        for w in withheld:
+            print(f"withheld by policy: {w['name']} — {w['reason']}")
+    outcome = patch.apply_plan(plan, confirm="PATCH")
     print(json.dumps(outcome, indent=1, default=str))
     after = engine.run_scan(args.target, program=args.program)
     still = [f for f in after["findings"] if f["confidence"] != "error"]
@@ -77,6 +76,196 @@ def cmd_patch(args):
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     pdf = _report.write_run_report(base, args.target, result, outcome, after)
     print(f"report: {pdf}")
+
+
+def cmd_mcp(args):
+    from . import mcp_server
+    mcp_server.main()
+
+
+def cmd_netwatch(args):
+    from . import netwatch as nw
+    if args.sample:
+        rec = nw.sample_once()
+        print(json.dumps({"sampled_at": rec["ts"],
+                          "sources": len(rec["snap"])}))
+        return
+    if args.block:
+        if (args.confirm or "") != "BLOCK":
+            print(json.dumps({"error": "blocking requires "
+                                       "--confirm BLOCK"}))
+            return
+        if args.target == "local":
+            out = nw.block(args.block, actor="owner (CLI)")
+        else:
+            out = nw.block_remote(args.target, args.block,
+                                  actor="owner (CLI)")
+        print(json.dumps(out, indent=1))
+        return
+    if args.unblock:
+        if (args.confirm or "") != "BLOCK":
+            print(json.dumps({"error": "unblocking requires "
+                                       "--confirm BLOCK"}))
+            return
+        print(json.dumps(nw.unblock(args.unblock,
+                                    actor="owner (CLI)"), indent=1))
+        return
+    try:
+        data = nw.census(hours=args.hours, target=args.target)
+    except Exception as e:
+        print(f"error: {type(e).__name__}: {e}"[:300], file=sys.stderr)
+        sys.exit(2)
+    if args.assess:
+        data = {"census": data, "assess": nw.assess(data)}
+    if args.json:
+        print(json.dumps(data, indent=1, default=str))
+        return
+    t = data["totals"]
+    print(f"netwatch {data['ts']} — {data.get('target', 'local')} · "
+          f"last {data['hours']}h · "
+          f"{t['public_sources']} public sources · {t['attempts']} "
+          f"failed attempts · {t['connected_now']} connected now · "
+          f"{t['blocked']} blocked")
+    if data.get("note"):
+        print("note:", data["note"])
+    for a in data["attackers"]:
+        g = a.get("geo") or {}
+        where = ", ".join(x for x in (g.get("city"), g.get("country"))
+                          if x) or "unknown location"
+        print(f"  [{a['level']}] {a['ip']} ({where}; "
+              f"{g.get('org') or g.get('isp') or '?'}) — "
+              f"{a['attempts']} attempts, users: "
+              f"{', '.join(a['users'][:5]) or '—'}, services: "
+              f"{', '.join(a['services']) or '—'}"
+              f"{' · CONNECTED NOW' if a.get('live_connected') else ''}"
+              f"{' · BLOCKED' if a['blocked'] else ''}")
+    for a in data["known_sources"]:
+        print(f"  [own network] {a['ip']} "
+              f"({(a.get('geo') or {}).get('label', a['class'])}) — "
+              f"{', '.join(a['services']) or '—'}")
+    if args.assess:
+        a = (data.get("assess") or {}).get("assessment")
+        if a:
+            print("\nAI assessment:\n" + a)
+
+
+def cmd_swarm(args):
+    from . import swarm as swarmmod
+    if args.act:
+        action, _, pid = args.act.partition(":")
+        try:
+            pid_int = int(pid)
+        except ValueError:
+            print(json.dumps({"error": "usage: --act "
+                                        "freeze|resume|kill:PID"}))
+            return
+        out = swarmmod.act(pid_int, action, args.confirm or "")
+        print(json.dumps(out, indent=1))
+        return
+    if args.mark:
+        kind, _, pid = args.mark.partition(":")
+        try:
+            pid_int = int(pid)
+        except ValueError:
+            print(json.dumps({"error": "usage: --mark "
+                                        "friendly|hostile:PID"}))
+            return
+        out = swarmmod.mark(pid_int, kind)
+        print(json.dumps(out, indent=1))
+        return
+    data = swarmmod.census()
+    if args.assess:
+        data = {"census": data, "assess": swarmmod.assess(data)}
+    if args.json:
+        print(json.dumps(data, indent=1, default=str))
+        return
+    if data.get("error"):
+        print(data["error"])
+        return
+    print(f"swarm census {data['ts']} — {data['total_processes']} "
+          f"processes · {len(data['friendly'])} friendly · "
+          f"{len(data['enemy'])} enemy · {len(data['unknown'])} unknown · "
+          f"{len(data['swarms'])} clusters")
+    for sw in data["swarms"]:
+        print(f"\n⚠ cluster [{sw['kind']}] {sw['key']}: {sw['reason']}")
+    for e in data["enemy"]:
+        print(f"  ☠ ENEMY pid {e['pid']} score {e['score']} "
+              f"{e['cmd'][:90]}\n      {e.get('why', '')}")
+    for e in data["unknown"]:
+        print(f"  ? UNKNOWN pid {e['pid']} score {e['score']} "
+              f"{e['cmd'][:90]}\n      {e.get('why', '')}")
+        for sig in e["signals"]:
+            print(f"      · {sig}")
+    for e in data["friendly"]:
+        print(f"  ✓ friendly pid {e['pid']} {e['cmd'][:90]} "
+              f"— {e.get('why', '')}")
+    inc = swarmmod.incidents(5)
+    if inc:
+        print("\nrecent defense actions:")
+        for i in inc:
+            print(f"  {i.get('ts')} {i.get('action')} pid "
+                  f"{i.get('pid')} {i.get('cmd', '')[:70]}")
+    if args.assess:
+        a = data.get("assess") or {}
+        if a.get("assessment"):
+            print("\nAI assessment:\n" + a["assessment"])
+        if a.get("verdict"):
+            print("verdict:", a["verdict"])
+
+
+def cmd_charter(args):
+    from . import agent_charter
+    print(agent_charter.CHARTER)
+
+
+def cmd_policy(args):
+    from . import policy as policymod
+    pol = policymod.load()
+    if args.json:
+        print(json.dumps({"policy": pol, "file": policymod.PATH}, indent=1))
+        return
+    print(f"automation policy ({policymod.PATH}):")
+    for k, v in pol.items():
+        print(f"  {k}: {v}")
+    if not pol["enabled"]:
+        print("\npolicy is OFF — agents can scan freely, but nothing "
+              "auto-patches until the owner enables it (GUI Settings → "
+              "Automation policy).")
+
+
+def cmd_watch(args):
+    import time as _time
+    from . import policy as policymod
+    pol = policymod.load()
+    targets = [args.target] if args.target else list(pol.get("targets") or [])
+    if not pol.get("enabled") or not pol.get("auto_apply"):
+        msg = {"ran": False, "reason": "automation policy is off — "
+               "enable it in GUI Settings → Automation policy or "
+               "config/policy.local.yaml"}
+        print(json.dumps(msg, indent=1) if args.json else msg["reason"])
+        return
+    targets = [t for t in targets if t in (pol.get("targets") or [])]
+    if not targets:
+        msg = {"ran": False, "reason": "no requested target is covered "
+               "by the policy"}
+        print(json.dumps(msg, indent=1) if args.json else msg["reason"])
+        return
+    interval = (args.interval or pol.get("scan_interval_hours") or 24) * 3600
+    while True:
+        for t in targets:
+            out = engine.auto_cycle(t)
+            if args.json:
+                print(json.dumps(out, indent=1, default=str))
+            elif out.get("ran"):
+                print(f"[{t}] findings {out['findings_before']} → "
+                      f"{out['findings_after']} · applied "
+                      f"{len(out['applied'])} · withheld "
+                      f"{len(out['withheld'])} · report {out['report']}")
+            else:
+                print(f"[{t}] {out.get('reason')}")
+        if args.once:
+            return
+        _time.sleep(interval)
 
 
 def cmd_cve(args):
@@ -146,7 +335,7 @@ def cmd_hosts(args):
 
 def cmd_models(args):
     cfg = cfgmod.load()
-    print(json.dumps(cfg, indent=1))
+    print(json.dumps(cfgmod.redacted(cfg), indent=1))
     print(f"config files: {cfgmod.MODELS_YAML} + {cfgmod.MODELS_LOCAL_YAML} (untracked, wins)")
     print("env overrides: AISHIELD_LM_URL, AISHIELD_TRIAGE_MODEL, "
           "AISHIELD_DECISION_MODEL")
@@ -339,7 +528,7 @@ def cmd_setup(args):
                   f"{'enabled' if en.lower().startswith('y') else 'disabled'}) in {path}")
     path = cfgmod.save(cfg)
     print(f"\nmodel config saved: {path}")
-    print(json.dumps(cfg, indent=1))
+    print(json.dumps(cfgmod.redacted(cfg), indent=1))
     print(f"targets now: {', '.join(inventory.targets())}")
     tri = ai.triage_model() or "offline (no chat model reachable)"
     print(f"main model: {tri}")
@@ -358,14 +547,21 @@ BANNER = "🛡️  AI Shield — CVE Now + KEV + OSV scanner/patcher"
 USAGE = """usage: aishield <command> [options]
 
   status                 feeds + model server + AI layer health
-  latest                 newest CVEs from CVE Now (--source kev|critical|all)
+  latest                 newest CVEs (--source kev|critical|all)
   cve <CVE-ID>           full detail on one CVE
-  scan <target>          scan local|<configured host>|all (--program X, --ai)
-  patch <target>         dry-run patch plan; --apply executes (held steps stay held)
+  scan <target>          scan local|<host>|all (--program X, --ai)
+  patch <target>         dry-run plan; --apply executes (held stay held)
+  swarm                  rogue-agent census (--assess, --act, --mark)
+  netwatch               sources probing this machine (--assess, --block)
+  policy                 show the automation policy for agents
+  watch [target]         policy-gated auto-defense cycles (--once)
+  charter                the agent charter (rules for AI callers)
   models                 show the model configuration
-  setup                  wizard: set the model server + models
-  settings               settings page in your browser (models + machines)
-  gui                    full desktop-style GUI in your browser (all platforms)
+  hosts                  show the machine list
+  setup                  wizard: model server + models + machines
+  settings               settings page in your browser
+  gui                    full desktop-style GUI in your browser
+  mcp                    MCP server on stdio (for agent clients)
 
 Models are swappable — config/models.yaml or env vars; nothing is hardcoded."""
 
@@ -394,7 +590,53 @@ def main(argv=None):
     p.add_argument("target", choices=inventory.targets())
     p.add_argument("--program", default=None)
     p.add_argument("--apply", action="store_true")
+    p.add_argument("--policy", action="store_true",
+                   help="with --apply: run only what the automation "
+                        "policy allows")
     p.set_defaults(fn=cmd_patch)
+    p = sub.add_parser("mcp")
+    p.set_defaults(fn=cmd_mcp)
+    p = sub.add_parser("swarm")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--assess", action="store_true",
+                   help="add the AI assessment + cluster verdict")
+    p.add_argument("--act", default=None,
+                   help="freeze:PID | resume:PID | kill:PID")
+    p.add_argument("--mark", default=None,
+                   help="friendly:PID | hostile:PID — teach the shield "
+                        "a program's verdict (remembered per program)")
+    p.add_argument("--confirm", default=None,
+                   help="actions require --confirm DEFEND")
+    p.set_defaults(fn=cmd_swarm)
+    p = sub.add_parser("netwatch")
+    p.add_argument("--hours", type=int, default=24)
+    p.add_argument("--target", default="local",
+                   choices=inventory.targets(),
+                   help="machine to watch (default: local)")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--assess", action="store_true",
+                   help="AI assessment of the tracked sources")
+    p.add_argument("--sample", action="store_true",
+                   help="take one connection-sensor snapshot "
+                        "(the sampler's job; appends to history)")
+    p.add_argument("--block", metavar="IP",
+                   help="add a public source IP to the blocklist")
+    p.add_argument("--unblock", metavar="IP")
+    p.add_argument("--confirm", help="BLOCK")
+    p.set_defaults(fn=cmd_netwatch)
+    p = sub.add_parser("charter")
+    p.set_defaults(fn=cmd_charter)
+    p = sub.add_parser("policy")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_policy)
+    p = sub.add_parser("watch")
+    p.add_argument("target", nargs="?", default=None,
+                   choices=inventory.targets() + [None])
+    p.add_argument("--once", action="store_true")
+    p.add_argument("--interval", type=float, default=None,
+                   help="hours between cycles (default: policy value)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_watch)
     p = sub.add_parser("cve")
     p.add_argument("cve_id")
     p.set_defaults(fn=cmd_cve)

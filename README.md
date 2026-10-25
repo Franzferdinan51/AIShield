@@ -79,8 +79,15 @@ the same pipeline:
    catalog (known-exploited). Installed apps, which have no package
    ecosystem, are name-matched against KEV with token-precise rules —
    never substring matching — so "7-Zip" can't false-positive on
-   unrelated names. Every finding cites its sources; a feed outage
-   degrades to a *warning on the scan*, never a fake finding.
+   unrelated names. Two more AI-friendly sources ride along:
+   **pwn.watch** live incidents (stamped onto proven findings, plus
+   name-match candidates that clear only at/past the published fix
+   on the same major line) and curated **disclosure advisories**
+   for vulnerabilities published with no CVE and no vendor fix
+   (a finding fires only on a version the source actually tested;
+   the planner never offers an upgrade for one). Every finding
+   cites its sources; a feed outage degrades to a *warning on the
+   scan*, never a fake finding.
 3. **Ranking.** Known-exploited first, then severity and fix
    availability, deduplicated across sources.
 4. **Patch planning.** One step per package to the highest fixed
@@ -207,14 +214,57 @@ what OSV's Ubuntu index is keyed on), pip (patch steps use the exact
 interpreter that was inventoried), npm, Homebrew, macOS apps, and
 Windows installed programs (registry).
 
+## Swarm tab — rogue agent detection & defense
+
+The desktop GUI's **Swarm** tab runs a census of the local machine:
+agent-like processes scored by signals (agent frameworks, browser
+automation, child fan-out, distinct endpoints, LLM-API traffic),
+clustered into candidate swarms (shared endpoints, one parent,
+identical worker command lines), with the owner's own agents
+recognized via an allowlist (`config/swarm.local.yaml`). The AI
+layer writes an assessment and a typed verdict on the largest
+cluster. Defense is owner-fired and on-machine only: **freeze**
+(SIGSTOP, reversible), **resume**, **kill**, an endpoint blocklist
+that marks talkers hostile, evidence snapshots and an incident log.
+System processes and the shield itself are protected. CLI:
+`aishield swarm [--assess]`; agents can read the census via the
+MCP `swarm_scan` tool — actions stay with the owner.
+
+## For agents (MCP / CLI / plugins)
+
+Scans are free for any agent. Patching is governed, on purpose:
+
+- **The agent charter** ships with the shield and binds any agent
+  using it: owner has the final say, patching needs the owner's
+  explicit approval (or their automation policy), and **all shield
+  data is the owner's confidential security data — reported to the
+  owner only, never shared with third parties**. Full text:
+  `aishield charter` or docs/AGENT-CHARTER.md. The MCP server sends
+  the charter to every client in its `initialize` response.
+- **Automation policy** (GUI Settings → Automation policy, or
+  `config/policy.local.yaml`; template in
+  `config/policy.example.yaml`, defaults fully off): when the owner
+  enables it, agents may run `auto_defend` (MCP) / `aishield watch`
+  cycles that scan and apply only what the policy allows —
+  safety-check `allow` required, name-match candidates withheld
+  unless allowed, lifelines never — writing the usual report every
+  cycle.
+- **LM Studio**: add to `mcp.json`:
+  `{"mcpServers": {"aishield": {"command": "python3", "args": ["-m",
+  "aishield.mcp_server"], "cwd": "/path/to/aishield"}}}` — or simply
+  `"command": "/path/to/aishield/bin/aishield", "args": ["mcp"]`.
+
 ## MCP server
 
 ```sh
 python3 -m aishield.mcp_server   # stdio JSON-RPC
 ```
 
-Tools: `latest_cves`, `cve_detail`, `scan_target`, `patch_plan`,
-`patch_apply` (requires `confirm="PATCH"`), `shield_status`.
+Tools (13): `latest_cves`, `cve_detail`, `scan_target`, `patch_plan`,
+`patch_apply` (requires `confirm="PATCH"`), `shield_status`,
+`swarm_scan`, `swarm_act` / `swarm_mark` (require `confirm="DEFEND"`),
+`automation_policy`, `auto_defend`, `netwatch_scan`,
+`netwatch_block` (requires `confirm="BLOCK"`).
 
 Register it with any MCP client as a stdio server with command
 `python3 -m aishield.mcp_server` and cwd set to this repo.
@@ -222,17 +272,23 @@ Register it with any MCP client as a stdio server with command
 ## Layout
 
 - `aishield/cvenow.py` — CVE Now MCP client (stateless JSON-RPC over HTTPS)
-- `aishield/feeds.py` — KEV catalog, OSV batch + cached details, NVD enrichment
+- `aishield/feeds.py` — KEV catalog, OSV batch + cached details, NVD enrichment, pwn.watch incidents
+- `aishield/disclosures.py` — curated advisories for vulnerabilities with no CVE (version-exact)
 - `aishield/transport.py` — built-in target transport (local + ssh)
 - `aishield/inventory.py` — per-OS collectors
-- `aishield/match.py` — matching engine (packages + KEV app watch)
+- `aishield/match.py` — matching engine (packages + KEV app watch + pwn.watch + disclosures)
 - `aishield/ai.py` — reasoning layer (triage + decision roles)
 - `aishield/patch.py` — patch plans, gated apply, patch log
 - `aishield/report.py` — dependency-free PDF run reports
 - `aishield/engine.py` — scan orchestration + report formatting
 - `aishield/gui.py` — the desktop-style GUI (local web app, stdlib only)
 - `aishield/settings.py` — the local settings page (stdlib only)
+- `aishield/swarm.py` — rogue-agent census + owner-fired defense
+- `aishield/netwatch.py` — network intrusion watch (sensors, canaries, blocklist)
+- `aishield/policy.py`, `aishield/approvals.py` — automation policy + owner approvals
+- `aishield/agent_charter.py` — the rules binding any agent using the shield
 - `aishield/cli.py`, `aishield/mcp_server.py` — the two front doors
+- `tests/` — runnable suites (`python3 tests/test_*.py`) + MCP end-to-end (`tests/mcp_e2e.py`)
 - `config/` — committed templates + your untracked `*.local.yaml`
 - `data/` — KEV cache, OSV detail cache, patch log, PDF reports
 
@@ -248,6 +304,193 @@ Register it with any MCP client as a stdio server with command
 
 ## Changelog
 
+- **0.17.6 (dev)** — hardening & fix pass: `latest` (CLI/MCP/GUI) shares
+  one implementation with KEV fallback when CVE Now is unreachable;
+  OSV outages degrade to a scan warning instead of killing the scan;
+  every KEV product match is reported and version-checked on its own
+  (a cleared old CVE no longer hides an affecting new one); npm
+  globals and multi-version brews are actually collected (both
+  parsers silently dropped them); pwn.watch candidates stop
+  false-positive matching on 3-letter and generic fragments
+  ("cli" flagged every *-cli tool); patch commands refuse shell
+  metacharacters (hostile names become manual steps); API keys are
+  masked everywhere agents can see them; owner-specific netwatch
+  ports and swarm names moved out of shipped source into untracked
+  local config; six runnable test suites, all green, MCP E2E 9/9.
+- **0.17.3–0.17.5 (dev)** — new sources + netwatch sensors: pwn.watch
+  live-incident overlay on proven findings plus name-match
+  candidates with same-major-line clearance; curated disclosure
+  advisories for vulnerabilities with no CVE and no fix
+  (version-exact matches only, never a patch offer); netwatch
+  probe sensors — scan-shape detection over sampler history,
+  canary listeners, widened service ports — with tests.
+- **0.17.2 (dev)** — GUI target pickers keep their selection across
+  refreshes; changing the patch target reloads the plan, changing
+  the scan target resets the scan state.
+- **0.17.1 (dev)** — KEV name-matches stop mismatching modifiers: a
+  lone word matching only the product's first token ("ruby" in
+  "Ruby on Rails") stands only with vendor corroboration, otherwise
+  it's recorded as cleared with the reason stated.
+- **0.17.0 (dev)** — GUI overhaul: grouped sidebar navigation,
+  a status topbar (version · targets · KEV date), a calmer flat
+  design system (softer contrast, denser tables, no glare),
+  toast notifications for patch completions, blocks and saves,
+  and full keyboard-focus + reduced-motion support. Every view
+  and control from before, restyled.
+- **0.16.2 (dev)** — Homebrew-owned packages patch too: plan
+  building detects pip packages that Homebrew actually owns
+  (pip can't update them — no RECORD) and turns them into
+  `brew upgrade <formula>` steps; an apply-time rescue retries
+  via brew if a step still lands blocked. Netwatch went remote
+  in 0.16.1 (watch/block on any target over SSH; faster local
+  census).
+- **0.16.0 (dev)** — remote patching that actually patches +
+  Netwatch. Windows targets patch for real now: scans collect
+  winget package ids (and available versions), so confirmed Windows
+  findings become winget upgrade steps the Patch page / CLI / MCP
+  can run over SSH — previously every Windows app was manual-only.
+  The Patch page runs patches as a background job with a **live
+  streaming log**, a persistent result banner, a **downloadable
+  log**, and a PDF — no more silent blocking request that wiped
+  its own confirmation. New **Netwatch** tab: sources probing or
+  attacking the machine, tracked from auth logs, live connections
+  and an optional 60-second sampler, geolocated and plotted on a
+  map (OpenStreetMap), blockable at the firewall from a shield
+  blocklist (pf / iptables / Windows Firewall scripts generated;
+  your own tailnet/LAN can never be blocked). AI assessment
+  included. MCP + Hermes plugin gain `netwatch_scan` /
+  `netwatch_block` (13 tools), the agent charter gains the
+  Netwatch rules, and the Hermes plugin registration is rewritten
+  (it silently dropped every tool past the original six).
+- **0.15.2 (dev)** — swarm defense for agents: MCP `swarm_act` /
+  `swarm_mark` and Hermes plugin equivalents join the read-only
+  census. Rails: confirm DEFEND; census members only; agents can't
+  kill FRIENDLY processes or mark anything friendly (trust is the
+  owner's declaration); charter gains a swarm-defense section.
+- **0.15.1 (dev)** — Swarm verdicts made unmissable: exactly three
+  classes — **FRIENDLY** (identified as yours: allowlist, owner
+  process lineage, app path), **UNKNOWN** (agent-like, no owner
+  match), **ENEMY** (you marked it hostile, it talks to a blocked
+  endpoint, or the AI judged the program rogue — verdicts are
+  remembered per program). Every row says why in plain words, and
+  *It's mine* / *Mark hostile* buttons teach the shield per program.
+- **0.15.0 (dev)** — Swarm tab: rogue agent swarm detection
+  (process/network census, signal scoring, clustering, friendly
+  allowlist, endpoint blocklist) and defense (freeze/resume/kill
+  behind a DEFEND confirm, evidence snapshots, incident log) +
+  AI assessment with a typed cluster verdict. MCP `swarm_scan`
+  (read-only for agents), `aishield swarm` CLI.
+
+- **0.14.0** — automation policy for agents (owner's standing
+  orders: GUI Settings editor, `aishield policy`, config template;
+  MCP `auto_defend` / `aishield watch` cycles apply only what the
+  policy allows, every withheld step explained; defaults off) +
+  the agent charter (privacy: shield data to the owner only;
+  approval protocol; owner-final-say; detailed reporting) shipped
+  in docs, `aishield charter`, the MCP initialize instructions and
+  the Hermes plugin skill. MCP grows to 8 tools; `aishield mcp`
+  subcommand added.
+
+- **0.13.0** — owner approvals for held steps. Every "needs you"
+  item in the Patch page now offers **Approve & patch** (when a
+  patch command exists for it) or **Acknowledge** (stop listing it
+  as needing you). Approvals are recorded per finding
+  (data/approvals.json) and honored by every surface — GUI, CLI and
+  MCP all build plans through the same code. An approved candidate
+  still faces the AI safety check; approving a step the check
+  already held is the owner's explicit override. Two things no
+  approval can do: lift a lifeline hold, or invent a patch command
+  for app-store software. Every approval can be undone.
+
+- **0.12.2** — the Patch page reads like a patch page now: it opens
+  with "N ready to patch · M need you", plain-language cards (what,
+  from → to, how, the exact command), one big **Patch now** button
+  with the typed PATCH as a framed last check, and card-style results
+  (with AI diagnoses and the report link) instead of a raw JSON dump.
+  The plan loads itself when the page opens.
+- **0.12.1** — hardening of the 0.12.0 AI paths: flat-object JSON
+  parsing for model replies, verdict normalization, transient-error
+  tolerance in narrative calls, and a missing-import fix.
+- **0.12.0** — AI in the backend, not just the glass: patch runs
+  generate their narrative summary inside the report writer itself
+  (PDF, sidecar, GUI and MCP all carry the same text); failed or
+  blocked patch steps get an **AI diagnosis** (cause + next action,
+  from the step's own output) stamped into the outcome, the log and
+  the report; scans are **persisted and diffed** (data/scans/ —
+  every scan reports what's new and what resolved since the last
+  one); and KEV name-matches with no published version data anywhere
+  get an advisory **AI era stamp** (likely-stale / plausible /
+  unknown) so stale noise is recognizable — the stamp never clears
+  or confirms a finding.
+
+- **0.11.2** — narrative AI calls (explain / summary / ask) retry
+  with a larger token budget when a reasoning model spends the first
+  budget thinking and returns empty content.
+- **0.11.1** — name-matches stop crying wolf: a KEV candidate whose
+  installed version is provably outside the CVE's published affected
+  range (NVD CPE version windows, OSV fixed versions as fallback) is
+  cleared at scan time and reported as cleared, instead of reappearing
+  after every patch forever. Patch reports now annotate each remaining
+  finding (patched in this run / held / blocked / not in plan) and say
+  why patched items can still be listed. AI narrative calls fall back
+  to the configured main model when no chat model is loaded.
+- **0.11.0** — AI woven through the app (grounded, never in charge):
+  per-finding **Explain** buttons and an automatic plain-English
+  panel on CVE lookup (cached; fed only the KEV/CVE Now record and
+  what's installed, and it calls out likely stale name-matches);
+  **AI run summaries** in Reports (generated once, stored with the
+  run); and a new **Ask** view — questions answered strictly from
+  your shield's own data (last scan, patch log, reports), with an
+  explicit "not in the data" when it isn't. Matching and patching
+  stay deterministic, exactly as before.
+- **0.10.5** — Interactive reports: every patch run now writes a
+  structured JSON twin next to its PDF, and the GUI gains a Reports
+  view — browse runs, read findings-before/after, per-step results
+  with expandable command output, all in the app (PDF still linked).
+  Scan results are filterable (text + KEV-only) and click through
+  to CVE lookup; the patch apply output leads with a human summary
+  line instead of raw JSON.
+- **0.10.4** — Caching so a dead feed stops breaking pages: every
+  CVE Now call (feed, lookup, stack check) is cached on disk and an
+  outage serves the last cached answer instead of an exception; the
+  KEV catalog likewise falls back to its stale file when a refresh
+  fails. Status reporting stays honest — the dashboard distinguishes
+  reachable / unreachable-but-cached / unreachable-no-cache, and the
+  one warning a scan still prints is a human sentence, not a raw
+  HTTP stack trace.
+- **0.10.3** — Dashboard rebuilt with real detail (AI-layer panel,
+  feeds & system panel, per-target scan states, recent patch
+  activity from the log, newest KEV entries that click through to
+  lookup, downloadable PDF reports). Latest CVEs: KEV now comes
+  from the local catalog, and the CVE Now sources fall back to it
+  with a visible warning when the service is unreachable (on some
+  networks the page was simply empty). Local command execution now
+  augments PATH with the Homebrew locations — a service-launched
+  shield could collect brew packages but not run `brew upgrade`
+  (rc 127). Pip copies installed by Homebrew are reported as
+  blocked-brew-owned instead of a generic failure.
+- **0.10.2** — "when I tell it to patch, it patches": plan_for gated
+  adjudicated findings on a marker string ("AI-confirmed") that the
+  adjudicator never writes (it writes "confirmed by <via> model"), so
+  every AI-confirmed app/brew finding was held as manual forever.
+  The gate now reads the structured verdict. And a pip step refused
+  by PEP 668 (externally-managed environment) retries once with
+  --break-system-packages — an apply only runs under an explicit
+  human PATCH confirmation, which is the authorization for the
+  override; the retry is stamped in the step result and the log.
+- **0.10.1** — GUI settings fixes: the Save button was dead in the
+  browser (a NodeList has no .map — the API worked, the page's save
+  handler threw before posting; found by using the page, not the
+  API). Settings gained the missing fields the standalone settings
+  page already had (decisions endpoint, model-server proxy), host
+  rows can be removed, saves preserve per-host fields the form
+  doesn't render (e.g. identity), and a failed save now shows its
+  error instead of failing silently.
+- **0.10.0** — GUI redesign: glassmorphism theme — glossy bubble
+  cards with sheen, gradient orbs, pill navigation with glow,
+  glass-strip tables, toggle switches for every checkbox, gloss
+  sweep buttons (the Apply button gets its own caution gradient).
+  Same engine, same APIs, no dependencies.
 - **0.9.1** — launcher hardening: `bin/aishield` now probes for the
   first Python that can import the shield's dependencies instead of
   trusting `python3` (sanitized environments — agent plugin hosts,

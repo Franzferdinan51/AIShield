@@ -19,6 +19,7 @@ patch safety, and explains.
 """
 import json
 import os
+import re
 
 import requests
 
@@ -119,11 +120,18 @@ def triage(findings, target, model=None):
                                    "summary", "cvss", "known_exploited",
                                    "fixed_versions", "confidence")}
             for f in findings[:40]]
+    blob = json.dumps(slim, indent=1)
+    if len(blob) > 8000:
+        # Reasoning models burn their budget on huge finding dumps —
+        # trim (ranked: most important first) and say so.
+        blob = (blob[:8000] + "\n... (trimmed for length: %d findings "
+                "in total, most important first)"
+                % len(findings))
     prompt = ("Here are verified vulnerability findings for target "
               f"'{target}' (JSON). Write a short defensive brief: "
               "1) overall exposure in 2 sentences, 2) the top risks ranked, with "
               "for each: what's exposed, what an attacker gets, the exact fix, "
-              "3) what can wait. Keep it tight.\n\n" + json.dumps(slim, indent=1))
+              "3) what can wait. Keep it tight.\n\n" + blob)
     try:
         return chat([{"role": "system", "content": SYSTEM},
                      {"role": "user", "content": prompt}], model=model,
@@ -337,3 +345,200 @@ def decide_patch_step(step):
     if word in ("allow", "hold"):
         return word, {"via": "chat"}
     return None, {}
+
+
+def _narrative_model():
+    """Model for explanations/summaries/answers: the triage pick (the
+    configured main model by name, else the strongest loaded chat
+    model). None when neither exists."""
+    return triage_model()
+
+
+def _narrate(prompt, model, max_tokens=1100):
+    """Chat for narrative answers. Reasoning models can burn the
+    whole token budget thinking and return empty content — retry
+    once with a much bigger budget before giving up."""
+    for budget in (max_tokens, 2600):
+        try:
+            out = chat([{"role": "user", "content": prompt}], model=model,
+                       max_tokens=budget, timeout=240)
+        except Exception:
+            out = None
+        if out and out.strip():
+            return out
+    return None
+
+
+# ------------------------------------------------------------------ explain
+def explain_cve(cve_id, kev_entry=None, vuln=None, installed=None):
+    """Plain-English explanation of one CVE, grounded ONLY in the data
+    passed in (KEV catalog fields, the CVE Now record, and what's
+    installed here). Returns None when no chat model is available."""
+    model = _narrative_model()
+    if not model:
+        return None
+    facts = ["CVE: %s" % cve_id]
+    if kev_entry:
+        facts.append("In CISA's Known Exploited catalog (actively exploited).")
+        for k in ("vendorProject", "product", "vulnerabilityName",
+                  "shortDescription", "dateAdded", "dueDate"):
+            if kev_entry.get(k):
+                facts.append("%s: %s" % (k, kev_entry[k]))
+    if isinstance(vuln, dict):
+        for k in ("summary", "description", "severity", "cvss", "published"):
+            v = vuln.get(k)
+            if v:
+                facts.append("%s: %s" % (k, str(v)[:600]))
+    if installed:
+        facts.append("Installed on this machine: %s %s"
+                     % (installed.get("name"), installed.get("version")))
+    prompt = (
+        "Explain this vulnerability to a home user in plain English, "
+        "using ONLY the facts below — never invent scores, dates, "
+        "versions or details that aren't given. Structure: (1) what it "
+        "is, (2) why it matters, (3) what the person should do. If an "
+        "installed version is listed and the CVE is clearly from a "
+        "much older era than that version, say plainly that this is "
+        "likely a stale name-match and the installed copy is probably "
+        "already past it. Max 170 words.\n\n" + "\n".join(facts))
+    try:
+        return _narrate(prompt, model, 1000)
+    except Exception:
+        return None
+
+
+def summarize_run(run):
+    """Narrate a patch run (the report sidecar dict) in plain English:
+    what was fixed, what remains and why, what needs the user's hands.
+    Grounded only in the run data. None when no model is available."""
+    model = _narrative_model()
+    if not model:
+        return None
+    raw_steps = (run.get("outcome") or {}).get("applied") or []
+    is_ok = lambda s: str(s.get("result", "")).startswith("applied")
+    # Reasoning models burn their whole budget thinking through a long
+    # repetitive step dump and return nothing — send clean applies as
+    # names only, and full detail only for steps needing attention.
+    ok = sorted(s.get("name") for s in raw_steps if is_ok(s))
+    bad = [{"name": s.get("name"), "result": s.get("result"),
+            "decision": s.get("decision"),
+            "note": (s.get("note") or "")[:120]} for s in raw_steps
+           if not is_ok(s)]
+    remaining = [{"name": f.get("name"), "cves": f.get("cve_ids"),
+                  "confidence": f.get("confidence")}
+                 for f in run.get("findings_after") or []][:25]
+    digest = {"target": run.get("target"), "when": run.get("ts"),
+              "summary": run.get("summary"), "applied_cleanly": ok,
+              "needs_attention": bad,
+              "still_present_after": remaining}
+    prompt = (
+        "Write a short plain-English summary of this security patch "
+        "run for the machine's owner, using ONLY the data below. Say "
+        "what got fixed (the applied_cleanly list), what needs "
+        "attention and why (use the notes), what is still present "
+        "afterwards, and end with a 'needs your hands' list — or say "
+        "nothing does. Never invent results that aren't in the data. "
+        "Max 220 words.\n\n"
+        + json.dumps(digest, default=str)[:6000])
+    try:
+        return _narrate(prompt, model, 1200)
+    except Exception:
+        return None
+
+
+def ask(question, context):
+    """Answer a question about the user's own shield data (scan
+    digest, patch stats, report summaries — assembled by the caller).
+    Grounded strictly in that context; None when no model answers."""
+    model = _narrative_model()
+    if not model:
+        return None
+    prompt = (
+        "You are the AI layer of AI Shield, a home vulnerability "
+        "scanner. Answer the owner's question using ONLY the shield "
+        "data below. If the data doesn't cover the question, say so "
+        "plainly — never invent findings, versions or results. Be "
+        "brief and concrete.\n\nSHIELD DATA:\n%s\n\nQUESTION: %s"
+        % (context[:7000], question))
+    try:
+        return _narrate(prompt, model, 1200)
+    except Exception:
+        return None
+
+
+def diagnose_failure(step, output_tail):
+    """Explain a failed/blocked patch step from its own output: the
+    likely cause and the concrete next action. Grounded only in the
+    step + output given. {"cause","next"} or None."""
+    model = _narrative_model()
+    if not model:
+        return None
+    prompt = (
+        "A package patch step failed. Using ONLY the step and its "
+        "output below, answer with a JSON object and nothing else: "
+        "{\"cause\": \"the likely cause, one short sentence\", "
+        "\"next\": \"the concrete next action for the owner, one "
+        "short sentence\"}. Never invent error details that aren't "
+        "in the output.\n\nSTEP: %s %s via %s: %s\nOUTPUT (tail):\n%s"
+        % (step.get("name"), step.get("version"), step.get("manager"),
+           step.get("command"), (output_tail or "")[-900:]))
+    try:
+        out = _narrate(prompt, model, 700)
+        if not out:
+            return None
+        d = _first_json_object(out)
+        if d and d.get("cause"):
+            return {"cause": str(d["cause"])[:220],
+                    "next": str(d.get("next") or "")[:220]}
+        return {"cause": out.strip()[:220], "next": ""}
+    except Exception:
+        return None
+
+
+def _first_json_object(text):
+    """First flat {...} object in a model reply that parses as JSON.
+    (Greedy matching across a long reply grabs prose braces too and
+    fails the whole parse — take the first balanced flat object.)"""
+    for m in re.finditer(r"\{[^{}]*\}", text or "", re.S):
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            continue
+    return None
+
+
+def era_check(name, version, cve_id, kev_entry):
+    """Advisory era opinion for a KEV name-match that has NO published
+    version data anywhere (no NVD windows, no OSV fix): is the
+    installed version plausibly from the vulnerable era, or almost
+    certainly long past it? Advisory only — the finding always stays;
+    this just stamps it so a human can judge. None on any failure."""
+    model = _narrative_model()
+    if not model or not kev_entry:
+        return None
+    prompt = (
+        "A scanner matched an installed program to a known-exploited "
+        "CVE by product name only — no published affected-version "
+        "range exists. Installed: %s %s. CVE: %s (%s, %s). Catalog "
+        "description: %s. Judge ONLY the version era: answer with a "
+        "JSON object and nothing else: {\"verdict\": \"likely-stale\" "
+        "or \"plausible\" or \"unknown\", \"reason\": \"one short "
+        "sentence\"}. likely-stale means the installed version is "
+        "almost certainly long past this CVE's era."
+        % (name, version, cve_id,
+           kev_entry.get("vulnerabilityName", ""),
+           kev_entry.get("dateAdded", ""),
+           (kev_entry.get("shortDescription") or "")[:300]))
+    try:
+        out = _narrate(prompt, model, 700)
+        if not out:
+            return None
+        d = _first_json_object(out)
+        verdict = str((d or {}).get("verdict") or "").strip().lower()
+        verdict = verdict.replace("_", "-").replace(" ", "-")
+        if verdict in ("likely-stale", "plausible", "unknown"):
+            return {"verdict": verdict,
+                    "reason": str(d.get("reason") or "")[:200]}
+        return None
+    except Exception:
+        return None

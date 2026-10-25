@@ -60,6 +60,17 @@ def load():
     return cfg
 
 
+def redacted(cfg):
+    """Copy of a loaded config safe to display or hand to agents: a
+    stored API key is masked to its last 4 characters."""
+    import copy
+    cfg = copy.deepcopy(cfg)
+    key = (cfg.get("server") or {}).get("api_key")
+    if key and not str(key).startswith("set ("):
+        cfg["server"]["api_key"] = "set (…%s)" % str(key)[-4:]
+    return cfg
+
+
 def save(cfg):
     """Persist to the UNTRACKED local config — a wizard run may hold an
     API key or a private server address, neither belongs in version

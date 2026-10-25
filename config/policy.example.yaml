@@ -1,0 +1,11 @@
+# AI Shield automation policy — copy to policy.local.yaml and edit.
+# This file is the OWNER's standing orders for agents (MCP auto_defend,
+# `aishield watch`, plugins). A fresh install has NO policy file, which
+# means automation is fully OFF: agents may scan and report, but
+# nothing patches without the owner in the loop.
+enabled: false            # master switch
+targets: [local]          # machines the policy covers
+auto_apply: false         # agents/watch may apply patches unattended
+require_decision_allow: true   # auto steps need the AI safety check's "allow" (or an owner approval)
+allow_candidates: false   # name-match findings may auto-apply too
+scan_interval_hours: 24   # watch-mode cadence

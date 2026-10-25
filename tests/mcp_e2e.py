@@ -37,7 +37,10 @@ send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
 r = recv()
 tools = [t["name"] for t in r["result"]["tools"]]
 check("tools/list", tools == ["latest_cves", "cve_detail", "scan_target",
-                              "patch_plan", "patch_apply", "shield_status"],
+                              "patch_plan", "patch_apply", "shield_status",
+                              "swarm_scan", "swarm_act", "swarm_mark",
+                              "automation_policy", "auto_defend",
+                              "netwatch_scan", "netwatch_block"],
       str(tools))
 
 send({"jsonrpc": "2.0", "id": 3, "method": "tools/call",

@@ -27,6 +27,35 @@ def _remote(target, command, timeout=300):
     return out
 
 
+def parse_brew_line(line):
+    """`brew list --versions` prints every installed version per line
+    ('brotli 1.2.0 1.2.1', oldest first) — the name is the FIRST token
+    and the installed version the LAST. Splitting off only the last
+    token corrupts the name with stale versions."""
+    parts = line.split()
+    if len(parts) >= 2:
+        return parts[0], parts[-1]
+    return None
+
+
+def _parse_npm_json(text, items, target):
+    """`npm ls --json` is pretty-printed multi-line JSON (unlike pip's
+    single line), so the NPM section is buffered whole and parsed
+    once — parsing it line-by-line silently yields zero packages."""
+    try:
+        doc = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return
+    if not isinstance(doc, dict):
+        return
+    for name, info in (doc.get("dependencies") or {}).items():
+        if isinstance(info, dict):
+            items.append({"name": name,
+                          "version": info.get("version") or "",
+                          "ecosystem": "npm", "manager": "npm",
+                          "target": target})
+
+
 # ------------------------------------------------------------------ linux
 LINUX_COLLECT = r'''
 echo "===DPKG==="
@@ -47,6 +76,7 @@ def inv_linux(target):
     raw = _remote(target, LINUX_COLLECT)
     items, section = [], None
     pyexe = None
+    npm_buf = []
     seen_src = set()
     for line in raw.splitlines():
         line = line.strip()
@@ -79,17 +109,12 @@ def inv_linux(target):
             except json.JSONDecodeError:
                 pass
         elif section == "NPM":
-            try:
-                for name, info in (json.loads(line).get("dependencies") or {}).items():
-                    items.append({"name": name, "version": info.get("version", ""),
-                                  "ecosystem": "npm", "manager": "npm",
-                                  "target": target})
-            except json.JSONDecodeError:
-                pass
+            npm_buf.append(line)
         elif section == "NODE":
             items.append({"name": "node", "version": line.lstrip("v"),
                           "ecosystem": "app", "manager": "binary",
                           "target": target})
+    _parse_npm_json("\n".join(npm_buf), items, target)
     return items
 
 
@@ -118,6 +143,7 @@ def inv_mac(target="mac"):
     raw = _remote(target, MAC_COLLECT)
     items, section = [], None
     pyexe = None
+    npm_buf = []
     for line in raw.splitlines():
         line = line.strip()
         if line.startswith("==="):
@@ -132,10 +158,11 @@ def inv_mac(target="mac"):
             # way: caller's login python was an agent venv with pins).
             pyexe = line
         elif section == "BREW":
-            parts = line.rsplit(" ", 1)
-            if len(parts) == 2:
-                items.append({"name": parts[0], "version": parts[1],
-                              "ecosystem": "app", "manager": "brew", "target": target})
+            parsed = parse_brew_line(line)
+            if parsed:
+                items.append({"name": parsed[0], "version": parsed[1],
+                              "ecosystem": "app", "manager": "brew",
+                              "target": target})
         elif section == "PIP":
             try:
                 for p in json.loads(line):
@@ -145,17 +172,13 @@ def inv_mac(target="mac"):
             except json.JSONDecodeError:
                 pass
         elif section == "NPM":
-            try:
-                for name, info in (json.loads(line).get("dependencies") or {}).items():
-                    items.append({"name": name, "version": info.get("version", ""),
-                                  "ecosystem": "npm", "manager": "npm", "target": target})
-            except json.JSONDecodeError:
-                pass
+            npm_buf.append(line)
         elif section == "APPS":
             if "|" in line:
                 n, v = line.rsplit("|", 1)
                 items.append({"name": n, "version": v, "ecosystem": "app",
                               "manager": "macapp", "target": target})
+    _parse_npm_json("\n".join(npm_buf), items, target)
     return items
 
 
@@ -170,6 +193,10 @@ foreach ($root in @("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*
     ForEach-Object { [PSCustomObject]@{ name = $_.DisplayName; version = "$($_.DisplayVersion)" } }
 }
 $apps | ConvertTo-Json -Compress
+"WINGETLIST"
+try { winget list --accept-source-agreements --disable-interactivity 2>$null } catch {}
+"WINGETUP"
+try { winget upgrade --accept-source-agreements --disable-interactivity 2>$null } catch {}
 '''
 
 
@@ -187,12 +214,58 @@ def _clean_win_name(name):
     return " ".join(kept) if kept else name
 
 
+def _parse_winget_table(lines):
+    """winget's fixed-width tables: column starts come from the header
+    row (Name/Id/Version/Available/Source). Returns row dicts."""
+    rows = []
+    header_at = None
+    for i, line in enumerate(lines):
+        if line.startswith("Name") and " Id" in line and "Version" in line:
+            header_at = i
+            break
+    if header_at is None:
+        return rows
+    header = lines[header_at]
+    cols = {}
+    for col in ("Name", "Id", "Version", "Available", "Source"):
+        at = header.find(" " + col) if col != "Name" else 0
+        if at >= 0:
+            cols[col] = at if col == "Name" else at + 1
+    order = sorted(cols.items(), key=lambda kv: kv[1])
+    for line in lines[header_at + 1:]:
+        if not line.strip() or set(line.strip()) <= set("- "):
+            continue
+        row = {}
+        for j, (col, start) in enumerate(order):
+            end = order[j + 1][1] if j + 1 < len(order) else None
+            row[col.lower()] = line[start:end].strip() if end else line[start:].strip()
+        if row.get("id"):
+            rows.append(row)
+    return rows
+
+
 def inv_windows(target):
     enc = base64.b64encode(WIN_COLLECT.encode("utf-16-le")).decode()
-    raw = _remote(target, f"powershell -NoProfile -EncodedCommand {enc}")
+    raw = _remote(target, f"powershell -NoProfile -EncodedCommand {enc}",
+                  timeout=600)
     items = []
+    section = "apps"
+    winget_lines, up_lines = [], []
     for line in raw.splitlines():
-        line = line.strip()
+        stripped = line.strip()
+        if stripped == "WINGETLIST":
+            section = "winget"
+            continue
+        if stripped == "WINGETUP":
+            section = "up"
+            continue
+        if section == "winget":
+            winget_lines.append(line)
+            continue
+        if section == "up":
+            up_lines.append(line)
+            continue
+        line = stripped
         if line.startswith("[") or line.startswith("{"):
             try:
                 data = json.loads(line)
@@ -207,6 +280,24 @@ def inv_windows(target):
                                       "target": target})
             except json.JSONDecodeError:
                 pass
+    # attach winget identity: registry names and winget names differ
+    # in decoration, so match on cleaned names, both directions.
+    by_clean = {}
+    for row in _parse_winget_table(winget_lines):
+        # only real winget packages can be upgraded by id — the list
+        # also carries ARP/MSIX pseudo-ids that winget cannot service
+        if (row.get("source") or "").lower() != "winget":
+            continue
+        by_clean[_clean_win_name(row.get("name", ""))] = row
+    up_by_id = {r["id"]: r for r in _parse_winget_table(up_lines)}
+    for it in items:
+        row = by_clean.get(it["name"]) or by_clean.get(
+            _clean_win_name(it.get("raw_name", "")))
+        if row:
+            it["winget_id"] = row["id"]
+            up = up_by_id.get(row["id"])
+            if up and up.get("available"):
+                it["winget_available"] = up["available"]
     return items
 
 

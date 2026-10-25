@@ -7,11 +7,37 @@ where the software lives, through the program's own transport.
 """
 import json
 import os
+import re
 import subprocess
 import time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG = os.path.join(HERE, "data", "patch-log.jsonl")
+
+# Patch commands run through a shell (local) or ssh (remote, whose
+# shell may be sh, cmd or powershell) — and apt runs under sudo. Any
+# package-supplied text interpolated into a command must therefore be
+# free of every shell's metacharacters, or the step stays manual with
+# an explanatory note. Real manager names/versions (scoped npm names,
+# Debian epochs, v-prefixed tags) all pass this guard.
+_UNSAFE_SHELL_CHARS = set(";|&$`'\"\\<>(){}[]!^%*?#~=\x00,")
+
+
+def shell_safe(text):
+    """True when `text` is safe to interpolate into a patch command:
+    non-empty, no whitespace, no shell metacharacters on sh/cmd/
+    powershell, and not starting with '-' (flag injection)."""
+    s = str(text or "")
+    if not s or s.startswith("-"):
+        return False
+    return not any(c.isspace() or c in _UNSAFE_SHELL_CHARS for c in s)
+
+
+def _manual_unsafe():
+    return {"auto": False, "command": None,
+            "note": "package name, version or path contains characters "
+                    "the shield won't place in a shell command — update "
+                    "it by hand"}
 
 
 
@@ -42,15 +68,30 @@ def target_opts(target):
 
 def plan_for(finding):
     """Return {auto: bool, command: str|None, note: str} for one finding."""
-    if str(finding.get("confidence", "")).startswith("name-match") and \
-            "AI-confirmed" not in str(finding.get("confidence", "")):
+    conf = str(finding.get("confidence", ""))
+    confirmed = finding.get("ai_verdict") == "yes" or "confirmed" in conf
+    if conf.startswith("name-match") and not confirmed:
+        if "pwn.watch" in (finding.get("sources") or []):
+            return {"auto": False, "command": None,
+                    "note": "unconfirmed product name-match (pwn.watch incident) — "
+                            "check the installed version against the incident's "
+                            "affected range before patching"}
         return {"auto": False, "command": None,
                 "note": "unconfirmed product name-match — verify it's the KEV product "
                         "before patching (scan with adjudication to auto-check)"}
+    if any(str(s).startswith("disclosure:") for s in finding.get("sources") or []):
+        return {"auto": False, "command": None,
+                "note": "no vendor fix published (undisclosed/unpatched advisory) — "
+                        "apply the advisory's mitigations; an upgrade is NOT a fix "
+                        "until the vendor ships one"}
     mgr, name = finding["manager"], finding["name"]
     fixed = (finding.get("fixed_versions") or [None])[0]
+    if not shell_safe(name) or (fixed is not None and not shell_safe(fixed)):
+        return _manual_unsafe()
     if mgr == "apt":
         install = finding.get("install_name") or name
+        if not shell_safe(install):
+            return _manual_unsafe()
         return {"auto": True, "command": f"sudo apt-get install -y --only-upgrade {install}",
                 "note": f"apt upgrades {install} to the distro's fixed build (backports included)"}
     if mgr == "pip":
@@ -58,6 +99,8 @@ def plan_for(finding):
         # a bare `python3` here could resolve to a different environment
         # than the one that was scanned.
         py = finding.get("python") or "python3"
+        if not shell_safe(py):
+            return _manual_unsafe()
         spec = f"'{name}>={fixed}'" if fixed else f"-U {name}"
         cmd = f"{py} -m pip install -U {spec}" if fixed else f"{py} -m pip install {spec}"
         if target_opts(finding["target"]).get("pip_break_system_packages"):
@@ -70,7 +113,25 @@ def plan_for(finding):
     if mgr == "brew":
         return {"auto": True, "command": f"brew upgrade {name}",
                 "note": "Homebrew upgrade to latest fixed build"}
-    if mgr in ("macapp", "winapp"):
+    if mgr == "winapp":
+        wid = finding.get("winget_id")
+        if wid:
+            if not shell_safe(wid):
+                return _manual_unsafe()
+            import base64 as _b64
+            ps = (f"winget upgrade --id {wid} --exact --silent "
+                  f"--accept-package-agreements "
+                  f"--accept-source-agreements --disable-interactivity")
+            enc = _b64.b64encode(ps.encode("utf-16-le")).decode()
+            avail = finding.get("winget_available")
+            return {"auto": True,
+                    "command": f"powershell -NoProfile -EncodedCommand {enc}",
+                    "note": f"winget upgrade {wid}"
+                            + (f" → {avail}" if avail else " → latest")}
+        return {"auto": False, "command": None,
+                "note": "no winget package id matched this app — update "
+                        "it with its vendor updater"}
+    if mgr == "macapp":
         return {"auto": False, "command": None,
                 "note": "App-store/vendor updater — update inside the app or its vendor site"}
     if mgr == "binary":
@@ -102,6 +163,64 @@ def lifeline_hold(name, target=None):
     return any(tok in n for tok in list(LIFELINES) + [str(e).lower() for e in extra])
 
 
+def brew_owner(target, name, python=None):
+    """If this pip package is actually owned by a Homebrew formula on
+    the target, return the formula name — pip cannot update those
+    (no RECORD; brew owns the files), brew can. Same-name formula
+    whose installed files include the package wins; otherwise the
+    formula named in pip's Location (…/Cellar/<formula>/…)."""
+    if not shell_safe(name) or (python and not shell_safe(python)):
+        return None
+    rc, out, err = _exec(target, "brew list --formula 2>/dev/null",
+                         timeout=60)
+    if rc != 0:
+        return None
+    formulas = set((out or "").split())
+    if name in formulas:
+        rc2, files, _ = _exec(
+            target, f"brew list {name} 2>/dev/null | grep site-packages "
+                    f"| head -5", timeout=60)
+        mod = name.replace("-", "_")
+        if mod in (files or "") or name in (files or ""):
+            return name
+    if python:
+        rc3, loc, _ = _exec(
+            target, f"{python} -m pip show {name} 2>/dev/null | "
+                    f"grep '^Location:'", timeout=60)
+        m = re.search(r"/Cellar/([^/]+)/", loc or "")
+        if m and m.group(1) in formulas:
+            return m.group(1)
+    return None
+
+
+def _convert_brew_owned(plan):
+    """pip steps whose package Homebrew owns become brew steps —
+    the only route that can actually update them. macOS targets
+    only; resolution is one brew query per pip step."""
+    from . import inventory as _inv
+    kinds = {}
+    for s in plan:
+        if s.get("manager") != "pip" or not s.get("auto"):
+            continue
+        t = s["target"]
+        if t not in kinds:
+            try:
+                kinds[t] = _inv.target_kind(t)
+            except Exception:
+                kinds[t] = None
+        if kinds[t] != "macos":
+            continue
+        py = (s.get("command") or "").split(" -m pip")[0] or None
+        formula = brew_owner(t, s["name"], python=py)
+        if formula:
+            s["manager"] = "brew"
+            s["brew_owned"] = True
+            s["brew_formula"] = formula
+            s["command"] = f"brew upgrade {formula}"
+            s["note"] = (f"pip copy is Homebrew-owned (pip can't "
+                         f"update it) — brew upgrade {formula}")
+
+
 def build_plan(findings, decide=False):
     """One step per (target, package, manager): when several CVEs hit one
     package, patch once to the highest fixed version. With decide=True, each
@@ -114,7 +233,9 @@ def build_plan(findings, decide=False):
         key = (f["target"], f["name"].lower(), f["manager"])
         step = {**{k: f.get(k) for k in ("target", "name", "version", "ecosystem",
                                          "manager", "cve_ids", "fixed_versions",
-                                         "known_exploited")}, **p}
+                                         "known_exploited", "ai_verdict",
+                                         "python", "install_name",
+                                         "winget_id", "winget_available")}, **p}
         if key not in steps:
             steps[key] = step
         else:
@@ -127,6 +248,7 @@ def build_plan(findings, decide=False):
                 s["command"], s["note"], s["auto"] = step["command"], step["note"], step["auto"]
                 s["fixed_versions"] = step["fixed_versions"]
     plan = list(steps.values())
+    _convert_brew_owned(plan)
     if decide:
         from . import ai
         checked = 0
@@ -144,7 +266,72 @@ def build_plan(findings, decide=False):
             if decision:
                 s["decision"] = decision
                 s["decision_detail"] = detail
+    _apply_approvals(plan, decide=decide)
     return plan
+
+
+def _approved_command(s):
+    """Rebuild the patch command for an owner-approved held step by
+    re-running the planner with the finding marked confirmed. Managers
+    without a command route still yield None — as do disclosure
+    findings, which must never gain an upgrade offer. The planner's
+    shell guard applies, so hostile names yield None too."""
+    if s.get("manager") not in ("pip", "brew", "npm", "apt", "winapp"):
+        return None
+    f = {**s, "confidence": "confirmed by owner approval"}
+    if s.get("manager") == "brew" and s.get("brew_formula"):
+        f = {**f, "name": s["brew_formula"]}
+    return plan_for(f)["command"]
+
+
+def _apply_approvals(plan, decide=False):
+    """Owner approvals (aishield/approvals.py) meet the plan:
+    'acknowledge' just stamps the step; 'patch' promotes a held step
+    into the plan — except lifelines, which no approval can lift, and
+    app-store items, which have no patch command to run. A promoted
+    candidate still faces the AI safety check; an approved step that
+    was ALREADY held by that check is the owner's override."""
+    from . import approvals
+    store = approvals.load()
+    if not store:
+        return
+    for s in plan:
+        action = approvals.lookup(s, store)
+        if not action:
+            continue
+        if action == "acknowledge":
+            s["acknowledged"] = True
+            continue
+        # action == "patch"
+        if lifeline_hold(s["name"], s.get("target")):
+            s["approval_blocked"] = "lifeline — never auto-patched"
+            continue
+        if s.get("auto") and s.get("decision") == "hold":
+            s["approved"] = True
+            s["approved_override"] = True
+            continue
+        if s.get("auto"):
+            s["approved"] = True
+            continue
+        cmd = s.get("command") or _approved_command(s)
+        if not cmd:
+            s["approval_blocked"] = ("no patch command exists for this "
+                                     "kind of item (vendor/app-store)")
+            continue
+        s["command"] = cmd
+        s["approved"] = True
+        if decide:
+            from . import ai
+            decision, detail = ai.decide_patch_step(s)
+            if decision:
+                s["decision"] = decision
+                s["decision_detail"] = detail
+                if decision == "hold":
+                    s["note"] = ((s.get("note") or "") +
+                                 " [you approved this, but the safety "
+                                 "check still holds it]").strip()
+                    continue  # stays manual: auto remains False
+        s["auto"] = True
 
 
 def _exec(target, command, timeout=600):
@@ -161,16 +348,23 @@ def _exec(target, command, timeout=600):
     return rc, (out or "")[-2000:], (err or "")[-1000:]
 
 
-def apply_plan(plan, confirm):
-    """Execute the auto entries of a plan. confirm must be the string 'PATCH'."""
+def apply_plan(plan, confirm, log=None):
+    """Execute the auto entries of a plan. confirm must be the string
+    'PATCH'. `log`, when given, is called with one line at a time so a
+    UI can stream the run live."""
+    say = log or (lambda line: None)
     if confirm != "PATCH":
         return {"error": "apply requires confirm='PATCH' — nothing was run"}
+    auto_n = sum(1 for s in plan if s.get("auto") and s.get("command"))
+    say(f"applying {auto_n} step(s); "
+        f"{len(plan) - auto_n} manual/held step(s) stay for the owner")
     # refresh apt metadata once per target before any apt step (a fresh
     # machine's package lists may be empty — "Unable to locate package")
     apt_targets = sorted({s["target"] for s in plan
                           if s.get("auto") and s.get("manager") == "apt"})
     update_warnings = []
     for t in apt_targets:
+        say(f"[{t}] refreshing apt package lists…")
         rc, out, err = _exec(t, "sudo apt-get update -qq", timeout=1800)
         if rc != 0:
             update_warnings.append(
@@ -181,18 +375,66 @@ def apply_plan(plan, confirm):
         if not step.get("auto") or not step.get("command"):
             results.append({**step, "result": "skipped-manual"})
             continue
-        if step.get("decision") == "hold":
+        if step.get("decision") == "hold" \
+                and not step.get("approved_override"):
             results.append({**step, "result": "held-by-decision"})
+            say(f"■ held by the safety decision: {step['name']} "
+                f"({step['target']})")
             continue
+        say(f"→ {step['name']} ({step['target']}): {step.get('note') or step['manager']}")
         rc, out, err = _exec(step["target"], step["command"])
+        pep668_retry = False
+        if rc != 0 and step.get("manager") == "pip" \
+                and "--break-system-packages" not in step["command"] \
+                and ("externally-managed" in (out + err) or "PEP 668" in (out + err)):
+            # PEP 668 refusal: this run exists only because a person
+            # explicitly confirmed it (confirm="PATCH"), so retry once
+            # with the override instead of failing the step.
+            pep668_retry = True
+            say("  pip refused (PEP 668 externally-managed) — retrying "
+                "once with --break-system-packages")
+            rc, out, err = _exec(step["target"],
+                                 step["command"] + " --break-system-packages")
         entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "target": step["target"],
                  "name": step["name"], "from_version": step["version"],
-                 "command": step["command"], "rc": rc}
+                 "command": step["command"], "rc": rc,
+                 "pep668_retry": pep668_retry}
         os.makedirs(os.path.dirname(LOG), exist_ok=True)
         with open(LOG, "a") as f:
             f.write(json.dumps(entry) + "\n")
-        results.append({**step, "result": "applied" if rc == 0 else "failed",
-                        "rc": rc, "output_tail": (out + err)[-400:]})
+        result = "applied" if rc == 0 else "failed"
+        if rc == 0:
+            say(f"  ✓ {step['name']} — command succeeded")
+        else:
+            tail = ((out + err).strip().splitlines() or [""])[-1][:160]
+            say(f"  ✗ {step['name']} — rc={rc}: {tail}")
+        if rc != 0 and ("no RECORD file" in (out + err)
+                        or "installed by brew" in (out + err)):
+            # pip cannot uninstall a copy Homebrew installed (no pip
+            # metadata) — that copy updates with brew, not pip. Try
+            # the brew route once, inside this confirmed run.
+            formula = brew_owner(
+                step["target"], step["name"],
+                python=(step.get("command") or "").split(" -m pip")[0]
+                or None)
+            if formula:
+                say(f"  ↻ {step['name']} is Homebrew-owned — trying "
+                    f"brew upgrade {formula}")
+                rc2, out2, err2 = _exec(step["target"],
+                                        f"brew upgrade {formula}")
+                if rc2 == 0:
+                    result = "applied-via-brew"
+                    out, err, rc = out2, err2, rc2
+                    say(f"  ✓ {step['name']} — updated via brew "
+                        f"({formula})")
+                else:
+                    say(f"  ✗ brew upgrade {formula} also failed "
+                        f"(rc={rc2})")
+            if result == "failed":
+                result = "blocked-brew-owned"
+        results.append({**step, "result": result,
+                        "rc": rc, "pep668_retry": pep668_retry,
+                        "output_tail": (out + err)[-400:]})
     # Post-apply consistency check: if any pip step ran, ask that same
     # interpreter whether the environment still resolves (catches the case
     # where an upgrade overshoots another package's exact pin).
@@ -208,5 +450,22 @@ def apply_plan(plan, confirm):
         if rc != 0 and text:
             warnings.append({"target": target, "python": py,
                              "pip_check": text[:600]})
+    # AI diagnosis for anything that didn't apply — advice stamped
+    # onto the step, never a change to what was attempted.
+    try:
+        from . import ai as _ai
+        for r in results:
+            if r.get("result") in ("failed",) or str(
+                    r.get("result", "")).startswith("blocked"):
+                diag = _ai.diagnose_failure(r, r.get("output_tail") or "")
+                if diag:
+                    r["ai_diagnosis"] = diag
+                    say(f"  AI diagnosis for {r['name']}: {diag}")
+    except Exception:
+        pass
+    done_n = sum(1 for r in results
+                 if str(r.get("result", "")).startswith("applied"))
+    say(f"apply phase done: {done_n} applied, "
+        f"{len(results) - done_n} not applied (see step cards)")
     return {"applied": results,
             "env_warnings": update_warnings + warnings}

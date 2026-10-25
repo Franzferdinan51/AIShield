@@ -1,10 +1,10 @@
-data/kev.json
-data/osv-cache/
-data/patch-log.jsonl
+# Runtime data — the owner's confidential security data (scans, reports,
+# caches, patch logs, approvals). Everything under data/ is created at
+# runtime; nothing there belongs in version control.
+data/
+# Machine-local config: API keys, private hosts, automation policy,
+# swarm/netwatch allowlists. Templates live in config/*.example.yaml.
+config/*.local.yaml
 __pycache__/
 *.pyc
-
-data/reports/
-config/hosts.local.yaml
-config/models.local.yaml
-config/targets.local.yaml
+.pytest_cache/

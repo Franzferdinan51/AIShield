@@ -53,7 +53,10 @@ def hosts():
             userhost = env
             if ":" in env.rsplit("@", 1)[-1]:
                 userhost, _, port = env.rpartition(":")
-                cfg[target]["port"] = int(port)
+                try:
+                    cfg[target]["port"] = int(port)
+                except ValueError:
+                    pass  # garbage port: keep the configured default
             if "@" in userhost:
                 cfg[target]["user"], cfg[target]["host"] = userhost.split("@", 1)
             else:
@@ -179,8 +182,18 @@ def run(target, command, timeout=300):
     'local' runs in this machine's shell; any other target goes over
     ssh with the command as ONE argument (parsed once, remotely)."""
     if target == "local":
+        # A service-launched process (GUI server, plugin host) often
+        # inherits a minimal PATH without Homebrew — the collectors
+        # probe with an augmented PATH, so local command execution
+        # must too, or `brew upgrade ...` dies with rc 127.
+        env = dict(os.environ)
+        parts = (env.get("PATH") or "/usr/bin:/bin").split(":")
+        for extra in ("/opt/homebrew/bin", "/usr/local/bin"):
+            if extra not in parts:
+                parts.insert(0, extra)
+        env["PATH"] = ":".join(parts)
         p = subprocess.run(command, shell=True, capture_output=True,
-                           text=True, timeout=timeout)
+                           text=True, timeout=timeout, env=env)
         return p.stdout, p.stderr, p.returncode
     p = subprocess.run(ssh_argv(target, command), capture_output=True,
                        text=True, timeout=timeout)
